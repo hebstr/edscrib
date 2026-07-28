@@ -1,3 +1,6 @@
+default_install_hook_types = ["pre-commit", "commit-msg"]
+default_stages = ["pre-commit"]
+
 [[repos]]
 repo = "local"
 hooks = [
@@ -34,4 +37,11 @@ repo = "https://github.com/facebook/pyrefly-pre-commit"
 rev = "1.1.1"
 hooks = [
   { id = "pyrefly-check" }
+]
+
+[[repos]]
+repo = "https://github.com/compilerla/conventional-pre-commit"
+rev = "v4.4.0"
+hooks = [
+  { id = "conventional-pre-commit", stages = ["commit-msg"] }
 ]

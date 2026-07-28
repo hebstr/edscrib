@@ -9,7 +9,10 @@ authors = [
     { name = "Henry BOSTORRHUS", email = "ju.diez@protonmail.com" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "pandas>=3.0.0",
+    "pyarrow>=24.0.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/hebstr/edscrib"
