@@ -1,0 +1,288 @@
+# Path to a base configuration file to extend (default: null)
+# extend = "../shared/ruff.toml"
+
+# Minimum Python version targeted by upgrades and version-aware rules (default: "py310")
+target-version = "py313"
+
+# Preferred line length for E501 and the formatter (default: 88)
+line-length = 90
+
+# Spaces per indentation level (default: 4)
+indent-width = 4
+
+# Source roots used to classify first-party vs third-party imports (default: [".", "src"])
+src = [".", "src"]
+
+# Files to lint and format (default: ["*.py", "*.pyi", "*.pyw", "*.ipynb", "*.md", "**/pyproject.toml"])
+include = ["*.py", "*.pyi", "*.pyw", "*.ipynb"]
+
+# Additional include patterns (default: [])
+extend-include = []
+
+# File patterns to exclude (default: standard VCS, build, env, cache dirs)
+exclude = []
+
+# Additional exclude patterns merged with the default set (default: [])
+extend-exclude = [".venv"]
+
+# Apply exclusions even to explicitly passed paths (default: false)
+force-exclude = true
+
+# Honor .gitignore and similar VCS ignore files (default: true)
+respect-gitignore = true
+
+# Enable unstable rules, fixes, and formatter features (default: false)
+preview = false
+
+# Apply autofixes by default — equivalent to passing `--fix` (default: false)
+# Kept off: the gate passes --fix explicitly on its first pass and ends on a bare `ruff check`
+# that must report rather than rewrite. With fix = true that closing pass silently fixes and
+# exits 0, so it validates nothing (rules/python.md).
+fix = false
+
+# Apply only fixes, suppressing violation reports (default: false)
+fix-only = false
+
+# Allow application of unsafe fixes (default: null — show hint only)
+unsafe-fixes = false
+
+# Enumerate all fixes applied at the end of a run (default: false)
+show-fixes = true
+
+# Output format for violations: "full", "concise", "grouped", "json", "junit", "github", "gitlab", "pylint", "azure", "sarif" (default: "full")
+output-format = "concise"
+
+# Cache directory; honors RUFF_CACHE_DIR (default: ".ruff_cache")
+cache-dir = ".ruff_cache"
+
+# Built-ins to recognize beyond the default set (default: [])
+builtins = []
+
+# Directories treated as namespace packages (default: [])
+namespace-packages = []
+
+# Enforce a specific Ruff version at runtime — PEP 440 specifier (default: null)
+# required-version = ">=0.8"
+
+# ---------------------------------------------------------------------------
+# Linter
+# ---------------------------------------------------------------------------
+
+[lint]
+# Rule codes or category prefixes to enable (default: ["E4", "E7", "E9", "F"])
+# Common categories:
+#   E/W   pycodestyle (PEP 8)
+#   F     pyflakes (unused imports/vars, undefined names)
+#   I     isort (import sorting)
+#   N     pep8-naming
+#   D     pydocstyle (docstring conventions)
+#   UP    pyupgrade (modernize syntax for target-version)
+#   B     flake8-bugbear (likely bugs)
+#   A     flake8-builtins (shadowing builtins)
+#   C4    flake8-comprehensions
+#   SIM   flake8-simplify
+#   PTH   flake8-use-pathlib
+#   RET   flake8-return
+#   ARG   flake8-unused-arguments
+#   TID   flake8-tidy-imports
+#   TCH   flake8-type-checking
+#   PT    flake8-pytest-style
+#   PL    pylint (PLC, PLE, PLR, PLW)
+#   RUF   Ruff-specific rules
+#   PERF  Perflint (performance pitfalls)
+#   FURB  refurb (refactoring patterns)
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "PTH", "RUF"]
+
+# Rules to enable in addition to those in select (default: [])
+extend-select = []
+
+# Rule codes or prefixes to disable (default: [])
+ignore = []
+
+# Rules considered fixable by Ruff (default: ["ALL"])
+fixable = ["ALL"]
+
+# Additional rules to mark as fixable (default: [])
+extend-fixable = []
+
+# Rules to mark as not fixable (default: [])
+unfixable = []
+
+# Promote unsafe fixes of these rules to safe (default: [])
+extend-safe-fixes = []
+
+# Demote safe fixes of these rules to unsafe (default: [])
+extend-unsafe-fixes = []
+
+# Per-file rule overrides (default: {})
+per-file-ignores = { "__init__.py" = ["F401", "E402"], "*.ipynb" = ["E402", "E501"], "scripts/*" = ["E402"], "tests/*" = ["S101"] }
+
+# Per-file overrides merged with per-file-ignores (default: {})
+extend-per-file-ignores = {}
+
+# Regex matching variable names that should not trigger unused-variable warnings (default: "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$")
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+# File patterns excluded from linting only (default: [])
+exclude = []
+
+# Comment task tags recognized in TODO-style rules (default: ["TODO", "FIXME", "XXX"])
+task-tags = ["TODO", "FIXME", "XXX", "HACK", "NOTE"]
+
+# Confusable Unicode characters explicitly allowed (default: [])
+allowed-confusables = []
+
+# Modules to treat like the standard `typing` module (default: [])
+typing-modules = []
+
+# Allow imports from typing_extensions (default: true)
+typing-extensions = true
+
+# Permit auto-adding `from __future__ import annotations` (default: false)
+future-annotations = false
+
+# Objects to treat as logging.Logger instances for logger-related rules (default: [])
+logger-objects = []
+
+# External rule codes to preserve in `# noqa` directives (default: [])
+external = []
+
+# Enable preview rules and fixes (default: false)
+preview = false
+
+# Require explicit codes (no prefixes) when selecting preview rules (default: false)
+explicit-preview-rules = false
+
+# ---- isort (rule category I) ---------------------------------------------
+
+[lint.isort]
+# Force `from x import y` to render one import per line (default: false)
+force-single-line = false
+
+# Combine `from x import a` and `from x import b` (default: true)
+combine-as-imports = true
+
+# First-party module names — modules belonging to this project (default: [])
+known-first-party = []
+
+# Third-party modules to force-classify as third-party (default: [])
+known-third-party = []
+
+# Local-folder modules (relative imports) (default: [])
+known-local-folder = []
+
+# Order the sections are emitted in (default: ["future", "standard-library", "third-party", "first-party", "local-folder"])
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+
+# Import lines added to every file, e.g. ["from __future__ import annotations"] (default: [])
+required-imports = []
+
+# Add a trailing comma to multi-line import statements (default: true)
+split-on-trailing-comma = true
+
+# ---- pydocstyle (rule category D) ----------------------------------------
+
+[lint.pydocstyle]
+# Convention: "google", "numpy", "pep257" (default: null)
+convention = "numpy"
+
+# Ignore decorators when checking docstrings (default: [])
+ignore-decorators = []
+
+# Decorators marking a method as a property, which exempts it from the imperative-mood rule (default: [])
+property-decorators = []
+
+# ---- pep8-naming (rule category N) ---------------------------------------
+
+[lint.pep8-naming]
+# Names allowed to violate naming rules (default: [])
+ignore-names = ["setUp", "tearDown", "setUpClass", "tearDownClass", "setUpModule", "tearDownModule"]
+
+# Decorators marking a method as a classmethod-like (default: ["classmethod"])
+classmethod-decorators = ["classmethod"]
+
+# Decorators marking a method as a staticmethod-like (default: ["staticmethod"])
+staticmethod-decorators = ["staticmethod"]
+
+# ---- mccabe (rule C901) --------------------------------------------------
+
+[lint.mccabe]
+# Maximum allowed cyclomatic complexity (default: 10)
+max-complexity = 10
+
+# ---- pylint (rule category PL) -------------------------------------------
+
+[lint.pylint]
+# Maximum number of arguments in a function (default: 5)
+max-args = 8
+
+# Maximum number of branches in a function (default: 12)
+max-branches = 12
+
+# Maximum number of statements in a function (default: 50)
+max-statements = 50
+
+# Maximum number of return statements (default: 6)
+max-returns = 6
+
+# Maximum number of public methods in a class (default: 20)
+max-public-methods = 20
+
+# Constant types ignored when used as magic values by PLR2004 (default: ["str", "bytes"])
+allow-magic-value-types = ["int", "str", "bytes"]
+
+# ---- flake8-bugbear (rule category B) ------------------------------------
+
+[lint.flake8-bugbear]
+# Functions whose default arg may be mutable (default: [])
+extend-immutable-calls = []
+
+# ---- flake8-tidy-imports (rule category TID) -----------------------------
+
+[lint.flake8-tidy-imports]
+# Ban relative imports: "all" or "parents" (default: "parents")
+ban-relative-imports = "parents"
+
+# Disallow specific module imports (default: {})
+banned-module-level-imports = []
+
+# ---- flake8-type-checking (rule category TCH) ----------------------------
+
+[lint.flake8-type-checking]
+# Base classes whose subclasses are exempt from being moved into TYPE_CHECKING blocks (default: [])
+runtime-evaluated-base-classes = []
+
+# Decorators exempting the class or function they mark from being moved into TYPE_CHECKING blocks (default: [])
+runtime-evaluated-decorators = []
+
+# Apply strict checking — flag all type-only imports (default: false)
+strict = false
+
+# ---------------------------------------------------------------------------
+# Formatter
+# ---------------------------------------------------------------------------
+
+[format]
+# Indentation: "space" or "tab" (default: "space")
+indent-style = "space"
+
+# Quote style for strings: "double", "single", "preserve" (default: "double")
+quote-style = "double"
+
+# Line endings: "auto", "lf", "cr-lf", "native" (default: "auto")
+line-ending = "auto"
+
+# Honor magic trailing commas as a formatting hint (default: false → respected)
+skip-magic-trailing-comma = false
+
+# Reformat code blocks inside docstrings (default: false)
+docstring-code-format = true
+
+# Line length for docstring code; integer or "dynamic" (default: "dynamic")
+docstring-code-line-length = "dynamic"
+
+# Enable preview formatter behavior (default: false)
+preview = false
+
+# File patterns excluded from formatting only (default: [])
+exclude = []

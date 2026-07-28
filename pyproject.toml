@@ -1,0 +1,34 @@
+[project]
+name = "edscrib"
+version = "0.1.0"
+description = "Streamlit annotation apps for clinical text: one engine, one configuration per app"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE.md"]
+authors = [
+    { name = "Henry BOSTORRHUS", email = "ju.diez@protonmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/hebstr/edscrib"
+Issues = "https://github.com/hebstr/edscrib/issues"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/edscrib"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.pyrefly]
+python-interpreter-path = ".venv/bin/python3"
