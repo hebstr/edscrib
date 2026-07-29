@@ -17,7 +17,7 @@ def secrets(tmp_path):
 
 
 def test_load_secrets_reads_the_users_table(secrets):
-    assert load_secrets(secrets)["users"] == USERS
+    assert load_secrets(secrets) == USERS
 
 
 def test_load_secrets_names_the_file_it_cannot_find(tmp_path):
@@ -136,9 +136,18 @@ def test_login_rejects_an_unknown_user_with_the_same_message(secrets):
 
 
 def test_login_lets_an_authenticated_session_through_without_a_form(secrets):
-    app = run_login(secrets, seed={"password_correct": True})
+    app = run_login(secrets, seed={"password_correct": True, "user": "annotator_a"})
 
     assert app.session_state["authenticated"]
+    assert app.session_state["user"] == "annotator_a"
+    assert not app.text_input
+
+
+def test_login_refuses_a_session_marked_correct_without_its_user(secrets):
+    app = run_login(secrets, seed={"password_correct": True})
+
+    assert app.exception
+    assert "user" in app.exception[0].value
     assert not app.text_input
 
 
@@ -147,3 +156,95 @@ def test_login_fails_on_a_missing_secrets_file_before_anything_is_typed(tmp_path
 
     assert app.exception
     assert not app.text_input
+
+
+def test_load_secrets_refuses_an_empty_password(tmp_path):
+    path = tmp_path / "secrets.toml"
+    path.write_text('[users]\nannotator_a = "sept-chevaux"\nannotator_c = ""\n')
+
+    with pytest.raises(ValueError, match="annotator_c"):
+        load_secrets(path)
+
+
+def test_load_secrets_refuses_a_non_string_password(tmp_path):
+    path = tmp_path / "secrets.toml"
+    path.write_text("[users]\nannotator_a = 1234\n")
+
+    with pytest.raises(ValueError, match="annotator_a"):
+        load_secrets(path)
+
+
+def test_verify_credentials_never_admits_an_empty_password(tmp_path):
+    path = tmp_path / "secrets.toml"
+    path.write_text('[users]\nannotator_c = ""\n')
+
+    with pytest.raises(ValueError):
+        verify_credentials(path, "annotator_c", "")
+
+
+def test_load_secrets_refuses_an_empty_users_table(tmp_path):
+    path = tmp_path / "secrets.toml"
+    path.write_text("[users]\n")
+
+    with pytest.raises(ValueError, match=r"secrets\.toml"):
+        load_secrets(path)
+
+
+def test_load_secrets_refuses_a_users_key_that_is_not_a_table(tmp_path):
+    path = tmp_path / "secrets.toml"
+    path.write_text('users = "annotator_a"\n')
+
+    with pytest.raises(KeyError, match="users"):
+        load_secrets(path)
+
+
+def test_load_secrets_names_the_file_it_cannot_parse(tmp_path):
+    path = tmp_path / "secrets.toml"
+    path.write_text('[users]\nannotator_a = "unclosed\n')
+
+    with pytest.raises(ValueError, match=r"secrets\.toml"):
+        load_secrets(path)
+
+
+def test_login_drops_the_password_from_the_session_when_it_is_rejected(secrets):
+    app = run_login(secrets)
+
+    app.text_input(key="username").input("annotator_TYPO")
+    app.text_input(key="password").input(USERS["annotator_a"]).run()
+
+    assert not app.session_state["password_correct"]
+    assert not app.session_state["password"]
+
+
+def test_login_still_admits_a_correct_pair_after_a_rejected_attempt(secrets):
+    app = run_login(secrets)
+
+    app.text_input(key="username").input("annotator_TYPO")
+    app.text_input(key="password").input(USERS["annotator_a"]).run()
+
+    app.text_input(key="username").input("annotator_a")
+    app.text_input(key="password").input(USERS["annotator_a"]).run()
+
+    assert app.session_state["authenticated"]
+    assert app.session_state["user"] == "annotator_a"
+
+
+def test_login_lets_an_authenticated_session_survive_a_broken_secrets_file(secrets):
+    app = run_login(secrets)
+
+    app.text_input(key="username").input("annotator_a")
+    app.text_input(key="password").input(USERS["annotator_a"]).run()
+
+    assert app.session_state["authenticated"]
+
+    secrets.write_text("[users]\n")
+    app.run()
+
+    assert not app.exception
+    assert app.session_state["authenticated"]
+
+    secrets.write_text('[users]\nannotator_a = "unclosed\n')
+    app.run()
+
+    assert not app.exception
+    assert app.session_state["authenticated"]
