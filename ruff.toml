@@ -13,7 +13,7 @@ indent-width = 4
 # Source roots used to classify first-party vs third-party imports (default: [".", "src"])
 src = [".", "src"]
 
-# Files to lint and format (default: ["*.py", "*.pyi", "*.pyw", "*.ipynb", "*.md", "**/pyproject.toml"])
+# Files to lint and format (default: ["*.py", "*.pyi", "*.pyw", "*.ipynb", "*.md", "**/pyproject.toml", "**/ruff.toml", "**/.ruff.toml"])
 include = ["*.py", "*.pyi", "*.pyw", "*.ipynb"]
 
 # Additional include patterns (default: [])
@@ -49,7 +49,7 @@ unsafe-fixes = false
 # Enumerate all fixes applied at the end of a run (default: false)
 show-fixes = true
 
-# Output format for violations: "full", "concise", "grouped", "json", "junit", "github", "gitlab", "pylint", "azure", "sarif" (default: "full")
+# Output format for violations: "full", "concise", "grouped", "json", "json-lines", "junit", "github", "gitlab", "pylint", "azure", "rdjson", "sarif" (default: "full")
 output-format = "concise"
 
 # Cache directory; honors RUFF_CACHE_DIR (default: ".ruff_cache")
@@ -69,7 +69,9 @@ namespace-packages = []
 # ---------------------------------------------------------------------------
 
 [lint]
-# Rule codes or category prefixes to enable (default: ["E4", "E7", "E9", "F"])
+# Rule codes or category prefixes to enable (default: a curated set spanning ~37 prefixes,
+# listed at https://docs.astral.sh/ruff/default-rules/ and resolved by
+# `ruff check --show-settings --isolated`)
 # Common categories:
 #   E/W   pycodestyle (PEP 8)
 #   F     pyflakes (unused imports/vars, undefined names)
@@ -85,7 +87,7 @@ namespace-packages = []
 #   RET   flake8-return
 #   ARG   flake8-unused-arguments
 #   TID   flake8-tidy-imports
-#   TCH   flake8-type-checking
+#   TC    flake8-type-checking
 #   PT    flake8-pytest-style
 #   PL    pylint (PLC, PLE, PLR, PLW)
 #   RUF   Ruff-specific rules
@@ -135,7 +137,8 @@ allowed-confusables = []
 # Modules to treat like the standard `typing` module (default: [])
 typing-modules = []
 
-# Allow imports from typing_extensions (default: true)
+# Let Ruff's own fixes fall back to typing_extensions for symbols absent from typing at the
+# configured target-version; set false where typing_extensions is not installed (default: true)
 typing-extensions = true
 
 # Permit auto-adding `from __future__ import annotations` (default: false)
@@ -159,7 +162,7 @@ explicit-preview-rules = false
 # Force `from x import y` to render one import per line (default: false)
 force-single-line = false
 
-# Combine `from x import a` and `from x import b` (default: true)
+# Keep aliased members of one module on a single `from x import a as b, c as d` (default: false)
 combine-as-imports = true
 
 # First-party module names — modules belonging to this project (default: [])
@@ -177,7 +180,7 @@ section-order = ["future", "standard-library", "third-party", "first-party", "lo
 # Import lines added to every file, e.g. ["from __future__ import annotations"] (default: [])
 required-imports = []
 
-# Add a trailing comma to multi-line import statements (default: true)
+# A trailing comma after the last member keeps the import from being folded onto one line (default: true)
 split-on-trailing-comma = true
 
 # ---- pydocstyle (rule category D) ----------------------------------------
@@ -186,7 +189,8 @@ split-on-trailing-comma = true
 # Convention: "google", "numpy", "pep257" (default: null)
 convention = "numpy"
 
-# Ignore decorators when checking docstrings (default: [])
+# Fully-qualified decorators whose functions/methods are exempt from docstring checks
+# entirely, e.g. ["typing.overload"] (default: [])
 ignore-decorators = []
 
 # Decorators marking a method as a property, which exempts it from the imperative-mood rule (default: [])
@@ -195,13 +199,14 @@ property-decorators = []
 # ---- pep8-naming (rule category N) ---------------------------------------
 
 [lint.pep8-naming]
-# Names allowed to violate naming rules (default: [])
+# Names or glob patterns allowed to violate naming rules; replaces the default rather than
+# extending it (default: the 12 unittest names, of which the 6 below are a subset)
 ignore-names = ["setUp", "tearDown", "setUpClass", "tearDownClass", "setUpModule", "tearDownModule"]
 
-# Decorators marking a method as a classmethod-like (default: ["classmethod"])
+# Decorators marking a method as classmethod-like, beyond the builtin `@classmethod` (default: [])
 classmethod-decorators = ["classmethod"]
 
-# Decorators marking a method as a staticmethod-like (default: ["staticmethod"])
+# Decorators marking a method as staticmethod-like, beyond the builtin `@staticmethod` (default: [])
 staticmethod-decorators = ["staticmethod"]
 
 # ---- mccabe (rule C901) --------------------------------------------------
@@ -234,7 +239,8 @@ allow-magic-value-types = ["int", "str", "bytes"]
 # ---- flake8-bugbear (rule category B) ------------------------------------
 
 [lint.flake8-bugbear]
-# Functions whose default arg may be mutable (default: [])
+# Fully-qualified calls to treat as immutable, exempting them from B008 / RUF009,
+# e.g. ["fastapi.Depends"] (default: [])
 extend-immutable-calls = []
 
 # ---- flake8-tidy-imports (rule category TID) -----------------------------
@@ -243,10 +249,10 @@ extend-immutable-calls = []
 # Ban relative imports: "all" or "parents" (default: "parents")
 ban-relative-imports = "parents"
 
-# Disallow specific module imports (default: {})
+# Modules barred from module-level import, to be imported lazily instead (default: [])
 banned-module-level-imports = []
 
-# ---- flake8-type-checking (rule category TCH) ----------------------------
+# ---- flake8-type-checking (rule category TC) -----------------------------
 
 [lint.flake8-type-checking]
 # Base classes whose subclasses are exempt from being moved into TYPE_CHECKING blocks (default: [])
@@ -255,7 +261,7 @@ runtime-evaluated-base-classes = []
 # Decorators exempting the class or function they mark from being moved into TYPE_CHECKING blocks (default: [])
 runtime-evaluated-decorators = []
 
-# Apply strict checking — flag all type-only imports (default: false)
+# Enforce TC001/TC002/TC003 even when a valid runtime import of the same module is present (default: false)
 strict = false
 
 # ---------------------------------------------------------------------------
