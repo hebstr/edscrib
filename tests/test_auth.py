@@ -1,9 +1,13 @@
 """Credential checking and the login shell, on synthetic secrets files."""
 
+import logging
+import tomllib
+import unicodedata
+
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from edscrib.auth import load_secrets, verify_credentials
+from edscrib.auth import SecretsError, load_secrets, verify_credentials
 
 USERS = {"annotator_a": "sept-chevaux", "annotator_b": "trois-oranges"}
 
@@ -23,15 +27,31 @@ def test_load_secrets_reads_the_users_table(secrets):
 def test_load_secrets_names_the_file_it_cannot_find(tmp_path):
     absent = tmp_path / "absent.toml"
 
-    with pytest.raises(FileNotFoundError, match=r"absent\.toml"):
+    with pytest.raises(SecretsError, match=r"absent\.toml"):
         load_secrets(absent)
+
+
+def test_load_secrets_names_a_path_it_cannot_open(tmp_path):
+    directory = tmp_path / "secrets.toml"
+    directory.mkdir()
+
+    with pytest.raises(SecretsError, match=r"secrets\.toml"):
+        load_secrets(directory)
+
+
+def test_load_secrets_names_a_file_an_editor_wrote_in_another_encoding(tmp_path):
+    path = tmp_path / "secrets.toml"
+    path.write_bytes('[users]\nannotator_a = "cl\xe9-de-vo\xfbte"\n'.encode("latin-1"))
+
+    with pytest.raises(SecretsError, match=r"secrets\.toml"):
+        load_secrets(path)
 
 
 def test_load_secrets_refuses_a_file_without_a_users_table(tmp_path):
     path = tmp_path / "secrets.toml"
     path.write_text("[server]\nport = 8501\n")
 
-    with pytest.raises(KeyError, match="users"):
+    with pytest.raises(SecretsError, match="users"):
         load_secrets(path)
 
 
@@ -50,6 +70,16 @@ def test_verify_credentials_compares_a_non_ascii_password(tmp_path):
 
     assert verify_credentials(path, "annotator_a", "clé-de-voûte")
     assert not verify_credentials(path, "annotator_a", "cle-de-voute")
+
+
+def test_verify_credentials_accepts_the_other_spelling_of_an_accented_password(tmp_path):
+    path = tmp_path / "secrets.toml"
+    decomposed = unicodedata.normalize("NFD", "clé-de-voûte")
+    composed = unicodedata.normalize("NFC", "clé-de-voûte")
+    path.write_text(f'[users]\nannotator_a = "{decomposed}"\n')
+
+    assert decomposed != composed
+    assert verify_credentials(path, "annotator_a", composed)
 
 
 def test_verify_credentials_rejects_a_non_ascii_password_on_an_ascii_secret(secrets):
@@ -166,42 +196,109 @@ def test_login_refuses_a_session_marked_correct_without_its_user(secrets):
     assert not app.text_input
 
 
-def test_login_fails_on_a_missing_secrets_file_before_anything_is_typed(tmp_path):
-    app = run_login(tmp_path / "absent.toml")
+def test_login_withholds_the_form_on_a_missing_secrets_file(tmp_path):
+    absent = tmp_path / "absent.toml"
 
-    assert app.exception
+    app = run_login(absent)
+
+    assert not app.exception
     assert not app.text_input
+    assert not app.session_state["authenticated"]
+    assert str(absent) not in app.error[0].value
 
 
-def test_load_secrets_refuses_an_empty_password(tmp_path):
+def test_login_names_neither_the_secrets_file_nor_what_it_could_not_parse(tmp_path):
+    path = tmp_path / "secrets.toml"
+    path.write_text('[users]\nannotator_a = "unclosed\n')
+
+    app = run_login(path)
+    message = app.error[0].value
+
+    assert not app.exception
+    assert not app.text_input
+    assert str(path) not in message
+    assert "unclosed" not in message
+
+
+def test_login_leaks_nothing_when_the_path_cannot_be_opened(tmp_path):
+    directory = tmp_path / "secrets.toml"
+    directory.mkdir()
+
+    app = run_login(directory)
+
+    assert not app.exception
+    assert not app.text_input
+    assert str(directory) not in app.error[0].value
+
+
+def test_login_leaks_nothing_when_the_file_is_in_another_encoding(tmp_path):
+    path = tmp_path / "secrets.toml"
+    path.write_bytes('[users]\nannotator_a = "cl\xe9-de-vo\xfbte"\n'.encode("latin-1"))
+
+    app = run_login(path)
+
+    assert not app.exception
+    assert not app.text_input
+    assert str(path) not in app.error[0].value
+
+
+def test_login_still_serves_the_form_when_one_annotator_entry_is_unusable(tmp_path):
     path = tmp_path / "secrets.toml"
     path.write_text('[users]\nannotator_a = "sept-chevaux"\nannotator_c = ""\n')
 
-    with pytest.raises(ValueError, match="annotator_c"):
-        load_secrets(path)
+    app = run_login(path)
+
+    assert not app.exception
+    assert not app.error
+    assert [field.key for field in app.text_input] == ["username", "password"]
 
 
-def test_load_secrets_refuses_a_non_string_password(tmp_path):
+def test_load_secrets_keeps_what_raised_underneath_it(tmp_path):
     path = tmp_path / "secrets.toml"
-    path.write_text("[users]\nannotator_a = 1234\n")
+    path.write_text('[users]\nannotator_a = "unclosed\n')
 
-    with pytest.raises(ValueError, match="annotator_a"):
+    with pytest.raises(SecretsError) as caught:
         load_secrets(path)
+
+    assert isinstance(caught.value.__cause__, tomllib.TOMLDecodeError)
+
+
+def test_load_secrets_drops_an_empty_password_and_names_it_in_the_log(tmp_path, caplog):
+    path = tmp_path / "secrets.toml"
+    path.write_text('[users]\nannotator_a = "sept-chevaux"\nannotator_c = ""\n')
+
+    with caplog.at_level(logging.WARNING, logger="edscrib.auth"):
+        assert load_secrets(path) == {"annotator_a": "sept-chevaux"}
+
+    assert "annotator_c" in caplog.text
+
+
+def test_load_secrets_drops_a_non_string_password(tmp_path):
+    path = tmp_path / "secrets.toml"
+    path.write_text('[users]\nannotator_a = "sept-chevaux"\nannotator_c = 1234\n')
+
+    assert load_secrets(path) == {"annotator_a": "sept-chevaux"}
+
+
+def test_load_secrets_still_serves_the_annotators_it_can_read(tmp_path):
+    path = tmp_path / "secrets.toml"
+    path.write_text('[users]\nannotator_a = "sept-chevaux"\nannotator_c = ""\n')
+
+    assert verify_credentials(path, "annotator_a", "sept-chevaux")
 
 
 def test_verify_credentials_never_admits_an_empty_password(tmp_path):
     path = tmp_path / "secrets.toml"
-    path.write_text('[users]\nannotator_c = ""\n')
+    path.write_text('[users]\nannotator_a = "sept-chevaux"\nannotator_c = ""\n')
 
-    with pytest.raises(ValueError):
-        verify_credentials(path, "annotator_c", "")
+    assert not verify_credentials(path, "annotator_c", "")
 
 
 def test_load_secrets_refuses_an_empty_users_table(tmp_path):
     path = tmp_path / "secrets.toml"
     path.write_text("[users]\n")
 
-    with pytest.raises(ValueError, match=r"secrets\.toml"):
+    with pytest.raises(SecretsError, match=r"secrets\.toml"):
         load_secrets(path)
 
 
@@ -209,7 +306,7 @@ def test_load_secrets_refuses_a_users_key_that_is_not_a_table(tmp_path):
     path = tmp_path / "secrets.toml"
     path.write_text('users = "annotator_a"\n')
 
-    with pytest.raises(KeyError, match="users"):
+    with pytest.raises(SecretsError, match="users"):
         load_secrets(path)
 
 
@@ -217,7 +314,7 @@ def test_load_secrets_names_the_file_it_cannot_parse(tmp_path):
     path = tmp_path / "secrets.toml"
     path.write_text('[users]\nannotator_a = "unclosed\n')
 
-    with pytest.raises(ValueError, match=r"secrets\.toml"):
+    with pytest.raises(SecretsError, match=r"secrets\.toml"):
         load_secrets(path)
 
 
@@ -229,6 +326,21 @@ def test_login_drops_the_password_from_the_session_when_it_is_rejected(secrets):
 
     assert not app.session_state["password_correct"]
     assert not app.session_state["password"]
+
+
+def test_login_drops_the_password_when_the_secrets_file_breaks_before_submission(
+    secrets,
+):
+    app = run_login(secrets)
+
+    secrets.write_text("[users]\n")
+
+    app.text_input(key="username").input("annotator_a")
+    app.text_input(key="password").input(USERS["annotator_a"]).run()
+
+    assert not app.exception
+    assert not app.text_input
+    assert "password" not in app.session_state
 
 
 def test_login_still_admits_a_correct_pair_after_a_rejected_attempt(secrets):
