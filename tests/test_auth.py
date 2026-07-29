@@ -85,6 +85,13 @@ def test_login_renders_the_form_and_holds_the_session_out(secrets):
     assert not app.exception
     assert not app.session_state["authenticated"]
     assert [field.key for field in app.text_input] == ["username", "password"]
+    assert not app.error
+
+
+def test_login_titles_the_form_with_its_default(secrets):
+    app = run_login(secrets)
+
+    assert "Connexion" in app.markdown[0].value
 
 
 def test_login_titles_the_form_and_shows_the_deployment_notice(secrets):
@@ -113,26 +120,34 @@ def test_login_admits_a_matching_pair_and_leaves_no_password_in_the_session(secr
     assert "password" not in app.session_state
 
 
-def test_login_rejects_a_wrong_password_without_naming_which_field(secrets):
+def _reject(secrets, username, password):
     app = run_login(secrets)
 
-    app.text_input(key="username").input("annotator_a")
-    app.text_input(key="password").input(USERS["annotator_b"]).run()
+    app.text_input(key="username").input(username)
+    app.text_input(key="password").input(password).run()
+
+    return app
+
+
+def test_login_rejects_a_wrong_password_without_naming_which_field(secrets):
+    app = _reject(secrets, "annotator_a", USERS["annotator_b"])
 
     assert not app.session_state["authenticated"]
     assert not app.session_state["password_correct"]
     assert "user" not in app.session_state
-    assert app.error
+
+    message = app.error[0].value.lower()
+
+    assert "utilisateur" in message
+    assert "mot de passe" in message
 
 
 def test_login_rejects_an_unknown_user_with_the_same_message(secrets):
-    app = run_login(secrets)
+    unknown = _reject(secrets, "annotator_c", USERS["annotator_a"])
+    wrong = _reject(secrets, "annotator_a", USERS["annotator_b"])
 
-    app.text_input(key="username").input("annotator_c")
-    app.text_input(key="password").input(USERS["annotator_a"]).run()
-
-    assert not app.session_state["authenticated"]
-    assert app.error
+    assert not unknown.session_state["authenticated"]
+    assert unknown.error[0].value == wrong.error[0].value
 
 
 def test_login_lets_an_authenticated_session_through_without_a_form(secrets):
