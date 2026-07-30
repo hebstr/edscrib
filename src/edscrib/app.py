@@ -13,7 +13,7 @@ import pandas as pd
 import streamlit as st
 from filelock import FileLock
 
-from edscrib.config import AnnotConfig
+from edscrib.config import USER, AnnotConfig
 from edscrib.io import build_output, data_path, read_data
 
 MESSAGE_MISMATCH = (
@@ -31,6 +31,12 @@ MESSAGE_COLUMNS = (
     "the server log, which the deployment operator reads."
 )
 
+MESSAGE_VALUES = (
+    "The output was built on different values: a column the input carries no longer "
+    "matches what the output records. The detail is in the server log, which the "
+    "deployment operator reads."
+)
+
 MESSAGE_UNAVAILABLE = (
     "The annotation data could not be opened. The detail is in the server log, which "
     "the deployment operator reads."
@@ -39,14 +45,22 @@ MESSAGE_UNAVAILABLE = (
 _logger = logging.getLogger(__name__)
 
 
-def _stamp(path: str | Path) -> tuple[int, int]:
-    """What the input file looks like from the outside, without opening it."""
+def _stamp(path: str | Path) -> tuple[int, int, int]:
+    """What the input file looks like from the outside, without opening it.
+
+    The inode is there because a modification time and a size are not an identity: a
+    mount serving them at second granularity collapses two writes of equal size into
+    one stamp, and the frame regenerated to answer a guard is then served from the
+    cache exactly as the stale one was. A generator that stages and renames lands on a
+    new inode, which no granularity collapses. One rewritten in place over the same
+    inode still rests on the modification time alone.
+    """
     info = Path(path).stat()
-    return info.st_mtime_ns, info.st_size
+    return info.st_ino, info.st_mtime_ns, info.st_size
 
 
 @st.cache_data(max_entries=1)
-def _read_input(path: str | Path, stamp: tuple[int, int]) -> pd.DataFrame:
+def _read_input(path: str | Path, stamp: tuple[int, int, int]) -> pd.DataFrame:
     """Read the input, keyed on the state of the file as well as on its path.
 
     `stamp` is never read. It is there to make a regenerated input a different entry:
@@ -68,6 +82,12 @@ def aligned(df_input: pd.DataFrame, df_output: pd.DataFrame, id_field: str) -> b
     `Series.equals` compares the index alongside the values, so this also rejects the
     two frames drifting apart into non-contiguous labels together, which is what would
     put the cursor on a row label that no longer exists.
+
+    Both frames are expected to carry the identifier, which is what the two column
+    guards establish ahead of every call. A frame without it does not answer the
+    question, it invalidates it, so the lookup is left to raise rather than folded into
+    a `False` that would read as a mismatch and send the operator to rebuild an input
+    that carries nothing wrong.
     """
     return df_input[id_field].equals(df_output[id_field])
 
@@ -94,6 +114,26 @@ def missing_fields(data: pd.DataFrame, fields: Sequence[str]) -> list[str]:
     return sorted(set(fields) - set(data.columns))
 
 
+def frozen_fields(
+    df_input: pd.DataFrame,
+    df_output: pd.DataFrame,
+    fields: Sequence[str],
+) -> list[str]:
+    """The declared columns whose values the output froze at its first build.
+
+    An output is resumed on its own existence, so everything outside the annotation is
+    whatever the input carried when it was created. An input regenerated to correct a
+    value keeps its ids and its column names, so it passes the alignment and column
+    guards while the correction reaches neither the frame the app renders nor the
+    export, which reads those columns out of the output.
+
+    Only the columns both frames carry are compared: the annotation's own columns are
+    what the output adds, and the text is what it drops.
+    """
+    shared = set(fields) & set(df_input.columns) & set(df_output.columns)
+    return sorted(name for name in shared if not df_input[name].equals(df_output[name]))
+
+
 def needs_write(on_disk: pd.DataFrame | None, note_fields: Sequence[str]) -> bool:
     """Whether the freshly built output has to reach the disk before annotating.
 
@@ -118,14 +158,23 @@ def write_output(data: pd.DataFrame, path: str | Path) -> None:
     write, at a path that exists, and every later start reads it and fails on it with
     no command of the app able to clear it.
 
+    The staging path is cleared whichever way the write ends, so a failed one leaves no
+    partial parquet beside the run it failed to update. The next successful write would
+    move its own staging file over it, but nothing guarantees a next one, and a
+    half-written sibling of the gold standard is what gets copied by mistake.
+
     The lock is a singleton, so a caller already holding it for the same path re-enters
-    it instead of deadlocking against itself: two distinct `FileLock` objects over one
-    path block each other even inside a single process.
+    it instead of raising against itself: `filelock` refuses two distinct objects over
+    one path in one thread rather than blocking on them.
     """
     with FileLock(f"{path}.lock", is_singleton=True):
         staged = Path(f"{path}.tmp")
-        data.to_parquet(staged)
-        staged.replace(path)
+
+        try:
+            data.to_parquet(staged)
+            staged.replace(path)
+        finally:
+            staged.unlink(missing_ok=True)
 
 
 def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -134,7 +183,21 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
     Returns the input frame, which carries the document text, and the output frame the
     app annotates. Both are labelled by position and aligned row for row once the
     guards have passed, which is what lets the rest of the app address a document by
-    position.
+    position, and they agree on every declared column outside the annotation, which is
+    what makes the output's own copy of them the export.
+
+    The configuration is expected resolved, and a name still carrying the placeholder
+    stops the app rather than reaching the disk: `build_output` would create the column
+    literally, every guard would pass against it on every later run, and the mislabelled
+    schema would be as permanent as the annotation accumulated in it. The audience of
+    that one is whoever deployed the app, so it goes to the log alone.
+
+    The declared columns are checked against the output, which is what makes
+    `table_fields` a description of the output's own columns rather than the input's.
+    `build_output` drops the text and adds the annotation, so a table field naming the
+    text stops the app on every run. Which of the two frames a table reads is the
+    rendering half's to settle; until it does, this guard is what fixes it to the
+    output.
 
     Reading the output, deciding whether it has to be written and writing it happen
     under one lock, the one `save_notes` takes. Deciding outside it would have a save
@@ -163,6 +226,15 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
                 st.error(MESSAGE_COLUMNS)
                 st.stop()
 
+            unresolved = sorted(
+                name for name in (*config.persisted, *config.table_fields) if USER in name
+            )
+
+            if unresolved:
+                _logger.error("The configuration was never resolved: %s", unresolved)
+                st.error(MESSAGE_UNAVAILABLE)
+                st.stop()
+
             df_output = build_output(
                 df_input,
                 output_path,
@@ -174,16 +246,27 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
                 st.error(MESSAGE_LABELS)
                 st.stop()
 
-            if not aligned(df_input, df_output, config.id_field):
-                st.error(MESSAGE_MISMATCH)
-                st.stop()
-
             declared = (config.id_field, *config.export_fields, *config.table_fields)
             missing = missing_fields(df_output, declared)
 
             if missing:
                 _logger.error("The output does not carry %s", missing)
                 st.error(MESSAGE_COLUMNS)
+                st.stop()
+
+            if not aligned(df_input, df_output, config.id_field):
+                st.error(MESSAGE_MISMATCH)
+                st.stop()
+
+            frozen = frozen_fields(
+                df_input,
+                df_output,
+                tuple(name for name in declared if name not in config.persisted),
+            )
+
+            if frozen:
+                _logger.error("The output was built on other values for %s", frozen)
+                st.error(MESSAGE_VALUES)
                 st.stop()
 
             on_disk = read_data(output_path) if Path(output_path).exists() else None

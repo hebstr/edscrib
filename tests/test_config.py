@@ -23,7 +23,6 @@ def make_config(groups, table_fields=("n",), **kwargs):
         output_suffix="output-review",
         groups=groups,
         table_fields=table_fields,
-        estimate_prefix="note_estimate",
         index_field="n",
         id_field="id_doc",
         text_field="doc_text",
@@ -129,17 +128,6 @@ def test_rows_pair_each_radio_with_its_comment(merge):
         ("note_estimate_roberto", "note_comment_roberto"),
         ("note_estimate_merge", "note_comment_merge"),
     ]
-
-
-def test_estimate_values_come_from_the_persisted_radio(merge):
-    assert merge.estimate_values == VALUES
-
-
-def test_estimate_values_ignore_a_radio_that_is_never_written(merge):
-    reference_only = make_config(groups=(merge.groups[0],))
-
-    with pytest.raises(ValueError, match="persisted radio"):
-        _ = reference_only.estimate_values
 
 
 def test_export_fields_are_the_index_the_metadata_and_the_persisted(merge):

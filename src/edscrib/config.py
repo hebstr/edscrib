@@ -56,7 +56,6 @@ class AnnotConfig:
     output_suffix: str
     groups: tuple[FieldGroup, ...]
     table_fields: tuple[str, ...]
-    estimate_prefix: str
     index_field: str
     id_field: str
     text_field: str
@@ -101,14 +100,6 @@ class AnnotConfig:
     def rows(self) -> tuple[tuple[NoteField, ...], ...]:
         fields = self.rendered
         return tuple(tuple(fields[i : i + 2]) for i in range(0, len(fields), 2))
-
-    @property
-    def estimate_values(self) -> tuple[str, ...]:
-        for group in self.groups:
-            for field in group.fields:
-                if group.persisted and field.kind == "radio":
-                    return field.options
-        raise ValueError("no persisted radio field to take estimate values from")
 
     @property
     def export_fields(self) -> tuple[str, ...]:

@@ -1,5 +1,6 @@
 """The data path an app runs before rendering anything: reads, guards, first write."""
 
+import os
 import threading
 from dataclasses import replace
 from pathlib import Path
@@ -13,20 +14,22 @@ from edscrib.app import (
     MESSAGE_COLUMNS,
     MESSAGE_LABELS,
     MESSAGE_UNAVAILABLE,
+    MESSAGE_VALUES,
+    _stamp,
     aligned,
+    frozen_fields,
     labelled_by_position,
     load_frames,
     missing_fields,
     needs_write,
     write_output,
 )
-from edscrib.config import AnnotConfig, FieldGroup, NoteField
+from edscrib.config import USER, AnnotConfig, FieldGroup, NoteField
 
 ID = "id_doc"
 TEXT = "doc_text"
 ESTIMATE = "note_estimate_a"
 COMMENT = "note_comment_a"
-PREFIX = "note_estimate"
 VALUES = ("oui", "non")
 FIELDS = (ESTIMATE, COMMENT)
 
@@ -57,7 +60,6 @@ def make_config(work_dir):
             ),
         ),
         table_fields=("n", ESTIMATE),
-        estimate_prefix=PREFIX,
         index_field="n",
         id_field=ID,
         text_field=TEXT,
@@ -102,6 +104,31 @@ def test_aligned_rejects_a_non_contiguous_index():
     assert not aligned(data, gapped, ID)
 
 
+### INPUT STAMP ---------------------------------------------------------------
+
+
+def test_stamp_separates_two_writes_a_coarse_mtime_would_collapse(tmp_path):
+    """Without this one the cache serves the frame the guards asked to regenerate.
+
+    A mount reporting seconds collapses the two modification times, and a regenerator
+    writing the same rows lands the same size. The rename onto a fresh inode is what
+    the stamp still has to tell apart.
+    """
+    path = tmp_path / "in.parquet"
+    make_input().to_parquet(path)
+    before = path.stat()
+    stamp = _stamp(path)
+
+    staged = tmp_path / "in.parquet.tmp"
+    make_input().to_parquet(staged)
+    staged.replace(path)
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    assert path.stat().st_size == before.st_size
+    assert path.stat().st_mtime_ns == before.st_mtime_ns
+    assert _stamp(path) != stamp
+
+
 ### LABEL GUARD ---------------------------------------------------------------
 
 
@@ -127,11 +154,22 @@ def test_missing_fields_names_what_the_frame_does_not_carry():
     assert missing_fields(data, ("n", ID)) == []
 
 
-@pytest.mark.parametrize("dropped", ["pat_age", ID])
-def test_load_frames_stops_on_a_reshape_the_alignment_guard_lets_through(
-    project, dropped, caplog
+@pytest.mark.parametrize(
+    ("dropped", "guarded"),
+    [("pat_age", "output"), (ID, "input")],
+    ids=["meta-column", "identifier"],
+)
+def test_load_frames_stops_on_a_column_the_reshaped_input_no_longer_carries(
+    project, dropped, guarded, caplog
 ):
-    """A dropped meta column keeps the ids in value and in order, so `aligned` passes."""
+    """Two reshapes of one input, each stopped by a different guard.
+
+    A dropped meta column passes the guard on the way in, which reads the identifier
+    and the text alone, and is found missing from the output built on it. A dropped
+    identifier never gets that far. Both render the one message, so the log is what
+    tells them apart, and asserting the frame it names is what keeps each parameter
+    on the guard it is written for.
+    """
     config, output = project
     folder = Path(config.work_dir) / "data" / "2023-01"
     reshaped = make_input().drop(columns=[dropped])
@@ -142,8 +180,99 @@ def test_load_frames_stops_on_a_reshape_the_alignment_guard_lets_through(
     assert not app.exception
     assert app.error[0].value == MESSAGE_COLUMNS
     assert dropped not in app.error[0].value
-    assert dropped in caplog.text
+    assert f"The {guarded} does not carry ['{dropped}']" in caplog.text
     assert not output.exists()
+
+
+def test_load_frames_names_the_identifier_the_output_does_not_carry(project, caplog):
+    """The guard runs ahead of `aligned`, which would raise on the same frame.
+
+    Caught at the boundary, that raise reaches the browser as an unreadable file rather
+    than as the missing column it is.
+    """
+    config, output = project
+    make_input().drop(columns=[TEXT, ID]).to_parquet(output)
+
+    app = run_shell(config)
+
+    assert not app.exception
+    assert app.error[0].value == MESSAGE_COLUMNS
+    assert ID not in app.error[0].value
+    assert f"The output does not carry ['{ID}']" in caplog.text
+
+
+def test_load_frames_stops_on_a_configuration_that_was_never_resolved(project, caplog):
+    """Without this one the placeholder becomes a column of the gold standard.
+
+    Nothing later catches it: the output carries the literal name, and every guard
+    passes against it on every run that follows.
+    """
+    config, output = project
+    unresolved = replace(
+        config,
+        groups=(
+            FieldGroup(
+                fields=(
+                    NoteField(f"note_estimate_{USER}", "AVC", "radio", VALUES),
+                    NoteField(f"note_comment_{USER}", "COMMENTAIRE", "text"),
+                ),
+            ),
+        ),
+        table_fields=("n", f"note_estimate_{USER}"),
+    )
+
+    app = run_shell(unresolved)
+
+    assert not app.exception
+    assert app.error[0].value == MESSAGE_UNAVAILABLE
+    assert USER not in app.error[0].value
+    assert f"note_estimate_{USER}" in caplog.text
+    assert not output.exists()
+
+
+### FROZEN VALUES -------------------------------------------------------------
+
+
+def test_frozen_fields_names_the_columns_the_output_records_differently():
+    df_input = make_input()
+    df_output = df_input.drop(columns=[TEXT]).assign(pat_age=[81, 82, 83])
+
+    assert frozen_fields(df_input, df_output, ("n", "pat_age", ID)) == ["pat_age"]
+    assert frozen_fields(df_input, df_output, ("n", ID)) == []
+
+
+def test_frozen_fields_compares_only_the_columns_both_frames_carry():
+    """The annotation's columns are what the output adds, the text what it drops."""
+    df_input = make_input()
+    df_output = df_input.drop(columns=[TEXT]).assign(**{ESTIMATE: "oui"})
+
+    assert frozen_fields(df_input, df_output, (TEXT, ESTIMATE, "pat_age")) == []
+
+
+def test_load_frames_stops_on_an_input_corrected_after_the_output_was_built(
+    project, caplog
+):
+    """Without this one the suite stays green when the correction never lands.
+
+    The regenerated input keeps its ids and its column names, so the alignment and
+    column guards both pass and the output goes on carrying the value it froze.
+    """
+    config, output = project
+    folder = Path(config.work_dir) / "data" / "2023-01"
+    source = folder / "2023-01_avc_annot_data_input-review.parquet"
+
+    assert not run_shell(config).error
+    assert list(pd.read_parquet(output)["pat_age"]) == [70, 70, 70]
+
+    make_input().assign(pat_age=[81, 82, 83]).to_parquet(source)
+
+    app = run_shell(config)
+
+    assert not app.exception
+    assert app.error[0].value == MESSAGE_VALUES
+    assert "pat_age" not in app.error[0].value
+    assert "pat_age" in caplog.text
+    assert list(pd.read_parquet(output)["pat_age"]) == [70, 70, 70]
 
 
 ### WRITE CONDITION ------------------------------------------------------------
@@ -209,6 +338,7 @@ def test_write_output_leaves_the_accumulated_run_readable_when_it_fails(
         write_output(make_input(2).drop(columns=[TEXT]), target)
 
     assert target.read_bytes() == before
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 def test_write_output_waits_for_a_held_lock(tmp_path):

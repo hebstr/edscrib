@@ -39,9 +39,12 @@ def build_output(
 
     An output is resumed as soon as it exists. A comment carries as much work as a
     radio answer, so a frame holding one and not the other is under way, and starting
-    over on it would discard it. An input reshaped between two runs reaches the
-    caller's alignment guard, which stops the app rather than opening a fresh output
-    over the accumulated one.
+    over on it would discard it.
+
+    Resuming freezes every column outside the annotation on what the input carried at
+    the first build, in ids, in column names and in values alike. An input regenerated
+    between two runs therefore reaches the caller's guards, which stop the app on each
+    of the three rather than opening a fresh output over the accumulated one.
     """
     data = read_data(path) if Path(path).exists() else None
 
