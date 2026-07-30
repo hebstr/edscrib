@@ -5,13 +5,11 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from edscrib.io import build_output, data_path, has_note_values
+from edscrib.io import build_output, data_path
 
 TEXT = "doc_text"
 ESTIMATE = "note_estimate_a"
 COMMENT = "note_comment_a"
-PREFIX = "note_estimate"
-VALUES = ("oui", "non")
 FIELDS = (ESTIMATE, COMMENT)
 
 
@@ -43,15 +41,8 @@ def test_data_path_takes_a_suffix_and_an_extension():
     assert path.name == "2023-01_avc_annot_data_output-review-bonus.xlsx"
 
 
-def test_has_note_values_scans_every_column_sharing_the_prefix():
-    data = pd.DataFrame({"note_estimate_a": ["", ""], "note_estimate_b": ["", "oui"]})
-
-    assert has_note_values(data, PREFIX, VALUES)
-    assert not has_note_values(data.drop(columns=["note_estimate_b"]), PREFIX, VALUES)
-
-
 def test_build_output_drops_the_text_column_and_appends_the_note_fields(output):
-    data = build_output(make_input(), output, TEXT, FIELDS, PREFIX, VALUES)
+    data = build_output(make_input(), output, TEXT, FIELDS)
 
     assert list(data.columns) == ["n", "meta", ESTIMATE, COMMENT]
     assert (data[ESTIMATE] == "").all()
@@ -60,7 +51,7 @@ def test_build_output_drops_the_text_column_and_appends_the_note_fields(output):
 def test_build_output_keeps_note_columns_already_carried_by_the_input(output):
     df_input = make_input(**{ESTIMATE: "oui"})
 
-    data = build_output(df_input, output, TEXT, FIELDS, PREFIX, VALUES)
+    data = build_output(df_input, output, TEXT, FIELDS)
 
     assert list(data.columns) == ["n", "meta", ESTIMATE, COMMENT]
     assert (data[ESTIMATE] == "oui").all()
@@ -70,17 +61,28 @@ def test_build_output_resumes_an_output_holding_an_estimate(output):
     started = make_input().drop(columns=[TEXT]).assign(**{ESTIMATE: ["oui", "", ""]})
     started.to_parquet(output)
 
-    data = build_output(make_input(), output, TEXT, FIELDS, PREFIX, VALUES)
+    data = build_output(make_input(), output, TEXT, FIELDS)
 
     assert data[ESTIMATE].tolist() == ["oui", "", ""]
     assert COMMENT in data.columns
 
 
-def test_build_output_rebuilds_an_output_holding_no_estimate(output):
+def test_build_output_resumes_an_output_holding_only_a_comment(output):
+    """A comment is committed work: an empty estimate leaves the output under way."""
+    started = make_input().drop(columns=[TEXT]).assign(**{ESTIMATE: ""})
+    started.assign(**{COMMENT: ["", "a revoir", ""]}).to_parquet(output)
+
+    data = build_output(make_input(), output, TEXT, FIELDS)
+
+    assert data[COMMENT].tolist() == ["", "a revoir", ""]
+
+
+def test_build_output_leaves_a_reshaped_output_to_the_alignment_guard(output):
+    """Starting over on it would open a fresh output over the accumulated one."""
     stale = pd.DataFrame({"gone": ["x"], ESTIMATE: [""]})
     stale.to_parquet(output)
 
-    data = build_output(make_input(), output, TEXT, FIELDS, PREFIX, VALUES)
+    data = build_output(make_input(), output, TEXT, FIELDS)
 
-    assert "gone" not in data.columns
-    assert len(data) == 3
+    assert "gone" in data.columns
+    assert len(data) == 1

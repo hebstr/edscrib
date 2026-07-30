@@ -29,27 +29,23 @@ def read_data(path: str | Path) -> pd.DataFrame:
     return pd.read_parquet(path)
 
 
-def has_note_values(data: pd.DataFrame, prefix: str, values: Sequence[str]) -> bool:
-    cols = [col for col in data.columns if col.startswith(prefix)]
-    return bool(data[cols].isin(values).any(axis=None))
-
-
 def build_output(
     df_input: pd.DataFrame,
     path: str | Path,
     text_field: str,
     note_fields: Sequence[str],
-    estimate_prefix: str,
-    estimate_values: Sequence[str],
 ) -> pd.DataFrame:
     """Resume an annotation output, or start one from the input.
 
-    An output holding no estimate value at all is treated as unstarted and rebuilt, so
-    that an input reshaped between two runs does not freeze the app on a stale frame.
+    An output is resumed as soon as it exists. A comment carries as much work as a
+    radio answer, so a frame holding one and not the other is under way, and starting
+    over on it would discard it. An input reshaped between two runs reaches the
+    caller's alignment guard, which stops the app rather than opening a fresh output
+    over the accumulated one.
     """
     data = read_data(path) if Path(path).exists() else None
 
-    if data is None or not has_note_values(data, estimate_prefix, estimate_values):
+    if data is None:
         data = df_input.drop([text_field], axis=1)
 
     for name in note_fields:
