@@ -10,7 +10,7 @@ Everything naming a column, a label, or a classification level stays in the cons
 
 Bootstrapping.
 The code descends symbol by symbol from its first consumer.
-`__all__` is still empty: what has landed is imported from its own module, `edscrib.io` for the parquet paths, the reading and the output creation, `edscrib.navigation` for the document cursor and the save under lock, and `edscrib.auth` for the login form and the credential check.
+`__all__` is still empty: what has landed is imported from its own module, `edscrib.io` for the parquet paths, the reading and the output creation, `edscrib.navigation` for the document cursor and the save under lock, `edscrib.auth` for the login form and the credential check, and `edscrib.export` for the Excel shaping and the gate an export passes through.
 
 ## Installation
 

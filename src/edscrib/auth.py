@@ -1,4 +1,11 @@
-"""Gating an annotation app behind the credentials of a deployment."""
+"""Gating an annotation app behind the credentials of a deployment.
+
+The copy a shell renders when it asks for a pair lives here in module constants, so
+that a deployment asking twice, at the login gate and again before an export, does not
+drift into two spellings of one sentence. The rejection is the one that matters: it
+names both fields so that it tells nobody which of the two was wrong, and a second copy
+of it is a second chance to name only one.
+"""
 
 import hmac
 import logging
@@ -10,7 +17,10 @@ import streamlit as st
 
 _logger = logging.getLogger(__name__)
 
-_DEPLOYMENT_ERROR = "Login unavailable: contact the application administrator."
+LABEL_USERNAME = "Identifiant"
+LABEL_PASSWORD = "Mot de passe"
+MESSAGE_REJECTED = "😕 Nom d'utilisateur ou mot de passe incorrect"
+MESSAGE_UNAVAILABLE = "Service indisponible : contactez l'administrateur."
 
 
 class SecretsError(Exception):
@@ -201,7 +211,7 @@ def login(path: str | Path, *, title: str = "Connexion", info: str = "") -> bool
         load_secrets(path)
     except SecretsError:
         _logger.exception("Secrets unusable, holding the login form back")
-        st.error(_DEPLOYMENT_ERROR)
+        st.error(MESSAGE_UNAVAILABLE)
         return False
 
     _, col, _ = st.columns([1, 3, 1])
@@ -212,10 +222,10 @@ def login(path: str | Path, *, title: str = "Connexion", info: str = "") -> bool
         if info:
             st.info(info)
 
-        st.text_input(label="Identifiant", key="username", persist_state=None)
+        st.text_input(label=LABEL_USERNAME, key="username", persist_state=None)
 
         st.text_input(
-            label="Mot de passe",
+            label=LABEL_PASSWORD,
             type="password",
             on_change=password_entered,
             key="password",
@@ -223,6 +233,6 @@ def login(path: str | Path, *, title: str = "Connexion", info: str = "") -> bool
         )
 
     if "password_correct" in state and not state["password_correct"]:
-        st.error("😕 Nom d'utilisateur ou mot de passe incorrect")
+        st.error(MESSAGE_REJECTED)
 
     return False
