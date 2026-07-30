@@ -1,6 +1,5 @@
 """Reading and writing the parquet files an annotation app works on."""
 
-from collections.abc import Sequence
 from pathlib import Path
 
 import pandas as pd
@@ -33,7 +32,7 @@ def build_output(
     df_input: pd.DataFrame,
     path: str | Path,
     text_field: str,
-    note_fields: Sequence[str],
+    note_fields: tuple[str, ...],
 ) -> pd.DataFrame:
     """Resume an annotation output, or start one from the input.
 

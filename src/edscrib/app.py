@@ -6,7 +6,6 @@ and a mislabelled gold standard. Rendering lives beside it.
 """
 
 import logging
-from collections.abc import Sequence
 from pathlib import Path
 
 import pandas as pd
@@ -103,7 +102,7 @@ def labelled_by_position(data: pd.DataFrame) -> bool:
     return data.index.equals(pd.RangeIndex(len(data)))
 
 
-def missing_fields(data: pd.DataFrame, fields: Sequence[str]) -> list[str]:
+def missing_fields(data: pd.DataFrame, fields: tuple[str, ...]) -> list[str]:
     """The declared columns the frame does not carry, in a stable order.
 
     The identifiers are what the alignment guard compares, and a reshape preserving
@@ -117,7 +116,7 @@ def missing_fields(data: pd.DataFrame, fields: Sequence[str]) -> list[str]:
 def frozen_fields(
     df_input: pd.DataFrame,
     df_output: pd.DataFrame,
-    fields: Sequence[str],
+    fields: tuple[str, ...],
 ) -> list[str]:
     """The declared columns whose values the output froze at its first build.
 
@@ -134,7 +133,7 @@ def frozen_fields(
     return sorted(name for name in shared if not df_input[name].equals(df_output[name]))
 
 
-def needs_write(on_disk: pd.DataFrame | None, note_fields: Sequence[str]) -> bool:
+def needs_write(on_disk: pd.DataFrame | None, note_fields: tuple[str, ...]) -> bool:
     """Whether the freshly built output has to reach the disk before annotating.
 
     The predicate reads the persisted frame rather than the one in memory: the columns

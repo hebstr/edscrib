@@ -53,7 +53,7 @@ def save_notes(path: str | Path, index: int, notes: Mapping[str, Any]) -> None:
 def navigation(
     path: str | Path,
     nrow: int,
-    note_fields: Sequence[str],
+    note_fields: tuple[str, ...],
     *,
     columns: Sequence[float],
     can_save: bool,
