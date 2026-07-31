@@ -1,5 +1,7 @@
 """The declarative shape two annotation apps reduce to, and what it derives."""
 
+from dataclasses import fields, replace
+
 import pytest
 
 from edscrib.config import AnnotConfig, FieldGroup, NoteField
@@ -19,8 +21,8 @@ def make_config(groups, table_fields=("n",), **kwargs):
         work_dir="annot",
         proj="avc",
         split="2023-01",
-        input_suffix="input-review",
-        output_suffix="output-review",
+        input_stem="input-review",
+        output_stem="output-review",
         groups=groups,
         table_fields=table_fields,
         index_field="n",
@@ -112,14 +114,14 @@ def test_rendered_follows_declaration_order_across_groups(merge):
     ]
 
 
-def test_persisted_holds_only_the_fields_of_persisted_groups(merge):
-    assert merge.persisted == ("note_estimate_merge", "note_comment_merge")
+def test_persisted_fields_holds_only_the_fields_of_persisted_groups(merge):
+    assert merge.persisted_fields == ("note_estimate_merge", "note_comment_merge")
 
 
-def test_persisted_covers_every_field_when_no_group_opts_out(review):
+def test_persisted_fields_covers_every_field_when_no_group_opts_out(review):
     resolved = review.resolve("fanny")
 
-    assert resolved.persisted == ("note_estimate_fanny", "note_comment_fanny")
+    assert resolved.persisted_fields == ("note_estimate_fanny", "note_comment_fanny")
 
 
 def test_rows_pair_each_radio_with_its_comment(merge):
@@ -139,6 +141,22 @@ def test_export_fields_are_the_index_the_metadata_and_the_persisted(merge):
     )
 
 
+def test_export_fields_names_a_column_declared_twice_only_once(merge):
+    """A caller selects on this, and a repeated label selects the column twice.
+
+    The two guards reading a column list fold theirs into a set, so neither ever saw
+    it; the workbook takes the frame as it comes.
+    """
+    doubled = replace(merge, meta_fields={merge.index_field: "N°", "pat_age": "ÂGE"})
+
+    assert doubled.export_fields == (
+        "n",
+        "pat_age",
+        "note_estimate_merge",
+        "note_comment_merge",
+    )
+
+
 def test_the_row_counter_and_the_document_id_are_distinct_columns(merge):
     """The table and the export key on the counter, the alignment guard on the id."""
     assert merge.index_field in merge.export_fields
@@ -149,6 +167,23 @@ def test_a_non_persisted_group_can_be_declared_read_only(merge):
     reference = [f for f in merge.rendered if f.name.endswith(("fanny", "roberto"))]
 
     assert not any(f.editable for f in reference)
+
+
+### CONSTRUCTION ---------------------------------------------------------------
+
+
+def test_the_configuration_refuses_a_positional_construction(review):
+    """Three of the fourteen fields are consecutive column names of one type.
+
+    Transposing the counter and the identifier is silent all the way down: the export
+    carries the identifier the counter is there to keep out of it, and both identity
+    guards compare a row counter against itself and pass on any two frames of equal
+    length. A consumer meets this in its own type checker; the raise is what pins it.
+    """
+    declared = [getattr(review, field.name) for field in fields(review)]
+
+    with pytest.raises(TypeError, match="positional"):
+        AnnotConfig(*declared)  # pyrefly: ignore[missing-argument]
 
 
 ### GUARD ----------------------------------------------------------------------
@@ -165,6 +200,27 @@ def test_a_group_accepts_several_rows():
 
 
 @pytest.mark.parametrize(
+    ("kind", "options", "message"),
+    [("radio", (), "got none"), ("text", VALUES, "got: oui")],
+    ids=["radio-without-options", "text-with-options"],
+)
+def test_a_field_whose_options_do_not_match_its_kind_is_rejected(kind, options, message):
+    """The default empty tuple is right for one kind and never for the other.
+
+    A radio declared without options renders and holds `None`, a third value beside
+    the empty sentinel and a real answer, which is what a save would write.
+    """
+    with pytest.raises(ValueError, match=message):
+        NoteField("f", "L", kind, options)
+
+
+def test_an_empty_group_is_rejected():
+    """The pairing holds vacuously on no field, both slices being empty."""
+    with pytest.raises(ValueError, match="none"):
+        FieldGroup(fields=())
+
+
+@pytest.mark.parametrize(
     ("label", "kinds"),
     [
         ("odd count", ("radio", "text", "radio")),
@@ -174,7 +230,10 @@ def test_a_group_accepts_several_rows():
     ids=["odd-count", "two-radios", "inverted"],
 )
 def test_a_group_that_is_not_a_sequence_of_rows_is_rejected(label, kinds):
-    fields = tuple(NoteField(f"f{i}", "L", kind) for i, kind in enumerate(kinds))
+    fields = tuple(
+        NoteField(f"f{i}", "L", kind, VALUES if kind == "radio" else ())
+        for i, kind in enumerate(kinds)
+    )
 
     with pytest.raises(ValueError, match="row"):
         FieldGroup(fields=fields)

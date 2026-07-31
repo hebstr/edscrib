@@ -5,7 +5,10 @@ building or resuming the output, and the guards that stand between a reshaped in
 and a mislabelled gold standard. Rendering lives beside it.
 """
 
+import dataclasses
 import logging
+from collections import Counter
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 
 import pandas as pd
@@ -73,6 +76,42 @@ def _read_input(path: str | Path, stamp: tuple[int, int, int]) -> pd.DataFrame:
     its frame. One entry is kept, so a regenerated input evicts rather than doubles it.
     """
     return read_data(path)
+
+
+def _strings(value: object) -> Iterator[str]:
+    """Every string the value holds, however deeply the shape nests it."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, Path):
+        yield str(value)
+    elif isinstance(value, Mapping):
+        for key, item in value.items():
+            yield from _strings(key)
+            yield from _strings(item)
+    elif dataclasses.is_dataclass(value) and not isinstance(value, type):
+        for field in dataclasses.fields(value):
+            yield from _strings(getattr(value, field.name))
+    elif isinstance(value, Iterable):
+        for item in value:
+            yield from _strings(item)
+
+
+def unresolved_fields(config: AnnotConfig) -> list[str]:
+    """Every string the configuration carries that still names the placeholder.
+
+    `resolve` binds it in the field names and in the table fields, and nowhere else,
+    which is a decision the shape documents rather than an omission to patch: a
+    placeholder in a working directory or in an identifier is an authoring mistake to
+    name, never one to make work. So the binding stays narrow and this is what covers
+    the rest, a label reaching the annotator with the braces beside the clinical
+    question being the one that has no feedback path at all.
+
+    The walk is generic rather than a list of the fields as they stand, since the shape
+    is still growing and an enumeration stops covering whatever is added next. That is
+    the very failure it is written against: `resolve`'s own two-item list is what left
+    the other twelve fields uncovered.
+    """
+    return sorted({value for value in _strings(config) if USER in value})
 
 
 def aligned(df_input: pd.DataFrame, df_output: pd.DataFrame, id_field: str) -> bool:
@@ -186,11 +225,31 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
     position, and they agree on every declared column outside the annotation, which is
     what makes the output's own copy of them the export.
 
-    The configuration is expected resolved, and a name still carrying the placeholder
-    stops the app rather than reaching the disk: `build_output` would create the column
-    literally, every guard would pass against it on every later run, and the mislabelled
-    schema would be as permanent as the annotation accumulated in it. The audience of
-    that one is whoever deployed the app, so it goes to the log alone.
+    The two stems are what separates the input from the gold standard, and nothing else
+    does: both paths are built from the same directory, project, split and suffix, so
+    equal stems make one file of the two. Every guard below then compares that file
+    against itself and passes, the build resumes on the input and keeps its text, and
+    the write replaces the input with the merged frame. The run reads as normal from
+    both sides while the raw input is gone and the annotation accumulates in the only
+    copy left, which the rebuild the guards prescribe would erase. That one is a
+    configuration defect and goes to the log alone.
+
+    A name is one column, so two fields carrying the same one after the binding are
+    refused. The binding is what makes that reachable: a group naming an annotator
+    literally, for reference, and a persisted group naming the same annotator through
+    the placeholder both resolve onto one column, and the save then writes the second
+    field's answer over what the first was there to show. The column is checked against
+    `rendered` rather than against `persisted_fields`, since the collision that loses an
+    annotation is exactly the one spanning a group that writes and a group that does
+    not, and no guard reading the persisted names alone can see it.
+
+    The configuration is expected resolved, and a string still carrying the placeholder
+    stops the app rather than reaching the disk or the page: `build_output` would create
+    the column literally, every guard would pass against it on every later run, and the
+    mislabelled schema would be as permanent as the annotation accumulated in it, while
+    a label carrying it reaches the annotator beside the clinical question with no
+    feedback path at all. The audience of that one is whoever deployed the app, so it
+    goes to the log alone.
 
     The declared columns are checked against the output, which is what makes
     `table_fields` a description of the output's own columns rather than the input's.
@@ -198,6 +257,16 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
     text stops the app on every run. Which of the two frames a table reads is the
     rendering half's to settle; until it does, this guard is what fixes it to the
     output.
+
+    Every rendered field is declared, not only the persisted ones. A group shown for
+    reference and never written owns columns `build_output` does not create: they reach
+    the output through the input's first copy alone, so a regenerated input that drops
+    or renames one passes every other guard and surfaces on whichever document the
+    annotator reaches. Reading them off `persisted_fields` would leave them covered
+    only when the consumer happens to repeat them among the table fields, which is a
+    summary table's list and not a statement about what the annotation reads. So too
+    the frozen-value guard covers them too: a reference answer the input has since
+    corrected stops the app rather than being reconciled against in its stale form.
 
     Reading the output, deciding whether it has to be written and writing it happen
     under one lock, the one `save_notes` takes. Deciding outside it would have a save
@@ -213,8 +282,13 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     try:
         paths = (config.work_dir, config.proj, config.split)
-        input_path = data_path(*paths, config.input_suffix, config.data_suffix)
-        output_path = data_path(*paths, config.output_suffix, config.data_suffix)
+        input_path = data_path(*paths, config.input_stem, config.data_suffix)
+        output_path = data_path(*paths, config.output_stem, config.data_suffix)
+
+        if input_path == output_path:
+            _logger.error("The input and the output resolve to %s", input_path)
+            st.error(MESSAGE_UNAVAILABLE)
+            st.stop()
 
         df_input = _read_input(input_path, _stamp(input_path))
 
@@ -226,12 +300,23 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
                 st.error(MESSAGE_COLUMNS)
                 st.stop()
 
-            unresolved = sorted(
-                name for name in (*config.persisted, *config.table_fields) if USER in name
-            )
+            unresolved = unresolved_fields(config)
 
             if unresolved:
                 _logger.error("The configuration was never resolved: %s", unresolved)
+                st.error(MESSAGE_UNAVAILABLE)
+                st.stop()
+
+            declared_twice = sorted(
+                name
+                for name, count in Counter(
+                    field.name for field in config.rendered
+                ).items()
+                if count > 1
+            )
+
+            if declared_twice:
+                _logger.error("Two fields are declared on %s", declared_twice)
                 st.error(MESSAGE_UNAVAILABLE)
                 st.stop()
 
@@ -239,14 +324,19 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
                 df_input,
                 output_path,
                 config.text_field,
-                config.persisted,
+                config.persisted_fields,
             )
 
             if not labelled_by_position(df_input) or not labelled_by_position(df_output):
                 st.error(MESSAGE_LABELS)
                 st.stop()
 
-            declared = (config.id_field, *config.export_fields, *config.table_fields)
+            declared = (
+                config.id_field,
+                *config.export_fields,
+                *config.table_fields,
+                *(field.name for field in config.rendered),
+            )
             missing = missing_fields(df_output, declared)
 
             if missing:
@@ -261,7 +351,7 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
             frozen = frozen_fields(
                 df_input,
                 df_output,
-                tuple(name for name in declared if name not in config.persisted),
+                tuple(name for name in declared if name not in config.persisted_fields),
             )
 
             if frozen:
@@ -271,7 +361,7 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
 
             on_disk = read_data(output_path) if Path(output_path).exists() else None
 
-            if needs_write(on_disk, config.persisted):
+            if needs_write(on_disk, config.persisted_fields):
                 write_output(df_output, output_path)
     except Exception:
         _logger.exception("Annotation data unusable, holding the app back")

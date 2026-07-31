@@ -22,6 +22,7 @@ from edscrib.app import (
     load_frames,
     missing_fields,
     needs_write,
+    unresolved_fields,
     write_output,
 )
 from edscrib.config import USER, AnnotConfig, FieldGroup, NoteField
@@ -49,8 +50,8 @@ def make_config(work_dir):
         work_dir=work_dir,
         proj="avc",
         split="2023-01",
-        input_suffix="input-review",
-        output_suffix="output-review",
+        input_stem="input-review",
+        output_stem="output-review",
         groups=(
             FieldGroup(
                 fields=(
@@ -201,6 +202,63 @@ def test_load_frames_names_the_identifier_the_output_does_not_carry(project, cap
     assert f"The output does not carry ['{ID}']" in caplog.text
 
 
+### PLACEHOLDER ---------------------------------------------------------------
+
+
+def test_unresolved_fields_is_empty_on_a_configuration_carrying_no_placeholder(tmp_path):
+    assert unresolved_fields(make_config(tmp_path)) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "named"),
+    [
+        ("work_dir", f"wk/{USER}", f"wk/{USER}"),
+        ("data_suffix", f"_{USER}", f"_{USER}"),
+        ("id_field", f"id_{USER}", f"id_{USER}"),
+        ("meta_fields", {f"pat_{USER}": f"ÂGE {USER}"}, f"pat_{USER}"),
+        ("table_fields", ("n", f"note_{USER}"), f"note_{USER}"),
+        ("tuto", (Path(f"{USER}.webm"), Path("t.vtt")), f"{USER}.webm"),
+    ],
+    ids=["work-dir", "suffix", "column", "meta-key", "table-field", "asset"],
+)
+def test_unresolved_fields_walks_every_field_the_binding_never_touches(
+    tmp_path, field, value, named
+):
+    """`resolve` binds two of the fourteen, so the guard is what covers the twelve.
+
+    The walk is generic, so a field the shape grows later is covered without anyone
+    remembering to add it here, which is the failure this replaces.
+    """
+    config = replace(make_config(tmp_path), **{field: value})
+
+    assert named in unresolved_fields(config)
+
+
+def test_unresolved_fields_reaches_a_label_and_a_group_that_is_never_written(tmp_path):
+    """The two the old scan was blind to, and the label has no feedback path at all.
+
+    It reaches the annotator beside the clinical question, and reading the names off
+    `persisted_fields` leaves a reference group's own out of the scan entirely.
+    """
+    config = replace(
+        make_config(tmp_path),
+        groups=(
+            FieldGroup(
+                fields=(
+                    NoteField(f"note_estimate_{USER}", "AVC", "radio", VALUES),
+                    NoteField("note_comment_b", f"COMMENTAIRE {USER}", "text"),
+                ),
+                persisted=False,
+            ),
+        ),
+    )
+
+    assert unresolved_fields(config) == [
+        f"COMMENTAIRE {USER}",
+        f"note_estimate_{USER}",
+    ]
+
+
 def test_load_frames_stops_on_a_configuration_that_was_never_resolved(project, caplog):
     """Without this one the placeholder becomes a column of the gold standard.
 
@@ -228,6 +286,94 @@ def test_load_frames_stops_on_a_configuration_that_was_never_resolved(project, c
     assert USER not in app.error[0].value
     assert f"note_estimate_{USER}" in caplog.text
     assert not output.exists()
+
+
+def test_load_frames_names_a_reference_column_the_output_does_not_carry(project, caplog):
+    """A group shown for reference owns columns `build_output` never creates.
+
+    They reach the output through the input's first copy alone, so an input that drops
+    or renames one leaves the render reading a column nothing put there. Reading the
+    declared names off `persisted_fields` would cover them only when the consumer repeats
+    among the table fields, which is a summary table's list.
+    """
+    config, output = project
+    reference = replace(
+        config,
+        groups=(
+            FieldGroup(
+                fields=(
+                    NoteField("note_estimate_b", "AVC_B", "radio", VALUES, False),
+                    NoteField("note_comment_b", "COMMENTAIRE_B", "text", (), False),
+                ),
+                persisted=False,
+            ),
+            *config.groups,
+        ),
+    )
+
+    app = run_shell(reference)
+
+    assert not app.exception
+    assert app.error[0].value == MESSAGE_COLUMNS
+    assert "note_estimate_b" not in app.error[0].value
+    assert (
+        "The output does not carry ['note_comment_b', 'note_estimate_b']" in caplog.text
+    )
+    assert not output.exists()
+
+
+def test_load_frames_stops_on_two_fields_the_binding_put_on_one_column(project, caplog):
+    """Reference and reconciliation collapsing onto one column of the gold standard.
+
+    A group naming an annotator literally and a persisted group naming the same one
+    through the placeholder resolve together, and the save writes the second answer
+    over what the first was there to show. `persisted_fields` holds the second name alone,
+    the placeholder guard is blind to it, and `frozen_fields` excludes the column for
+    being one the annotation writes.
+    """
+    config, output = project
+    reference = NoteField(ESTIMATE, "AVC_A", "radio", VALUES, editable=False)
+    collided = replace(
+        config,
+        groups=(
+            FieldGroup(
+                fields=(reference, NoteField(COMMENT, "COMMENTAIRE_A", "text")),
+                persisted=False,
+            ),
+            *config.groups,
+        ),
+    )
+
+    app = run_shell(collided)
+
+    assert not app.exception
+    assert app.error[0].value == MESSAGE_UNAVAILABLE
+    assert ESTIMATE not in app.error[0].value
+    assert f"Two fields are declared on ['{COMMENT}', '{ESTIMATE}']" in caplog.text
+    assert not output.exists()
+
+
+def test_load_frames_stops_on_two_stems_resolving_to_one_file(project, caplog):
+    """Without this one the app annotates the input and no second copy is left.
+
+    Every guard that follows compares the file against itself and passes, the build
+    resumes on the input and keeps its text, and the write puts the merged frame back
+    over it. Nothing surfaces, and the rebuild the other guards prescribe would erase
+    the annotation accumulated since.
+    """
+    config, _ = project
+    collided = replace(config, output_stem=config.input_stem)
+    folder = Path(config.work_dir) / "data" / "2023-01"
+    path = folder / "2023-01_avc_annot_data_input-review.parquet"
+    before = pd.read_parquet(path)
+
+    app = run_shell(collided)
+
+    assert not app.exception
+    assert app.error[0].value == MESSAGE_UNAVAILABLE
+    assert str(path) not in app.error[0].value
+    assert str(path) in caplog.text
+    assert pd.read_parquet(path).equals(before)
 
 
 ### FROZEN VALUES -------------------------------------------------------------
