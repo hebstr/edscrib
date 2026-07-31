@@ -8,7 +8,7 @@ from openpyxl import load_workbook
 from streamlit.testing.v1 import AppTest
 
 from edscrib.auth import MESSAGE_REJECTED, MESSAGE_UNAVAILABLE
-from edscrib.export import build_workbook
+from edscrib.export import _MAX_COLUMN_WIDTH, build_workbook
 
 USERS = {"annotator_a": "sept-chevaux"}
 SHEET = "2023-01_avc_annotator_a"
@@ -63,6 +63,14 @@ def test_build_workbook_widens_each_column_to_its_longest_value():
     assert all(width > 0 for width in widths)
 
 
+def test_build_workbook_caps_a_column_widened_by_a_long_comment():
+    frame = pd.DataFrame({"n": [1], "note_comment_a": ["x" * 400]})
+    sheet = load_workbook(build_workbook(frame, SHEET)).worksheets[0]
+
+    assert sheet.column_dimensions["B"].width == _MAX_COLUMN_WIDTH
+    assert _MAX_COLUMN_WIDTH <= 255
+
+
 def test_build_workbook_fills_the_header_row_and_no_other():
     sheet = sheet_of()
 
@@ -84,6 +92,42 @@ def test_build_workbook_centres_and_borders_every_cell():
 
 def test_build_workbook_filters_over_the_whole_table():
     assert sheet_of().auto_filter.ref == "A1:C4"
+
+
+def test_build_workbook_refuses_a_sheet_name_openpyxl_would_not_carry():
+    name = "x" * 32
+
+    with pytest.raises(ValueError, match="32 characters"):
+        build_workbook(FRAME, name)
+
+
+def test_build_workbook_refuses_a_value_openpyxl_would_truncate():
+    frame = pd.DataFrame({"n": [1], "note_comment_a": ["x" * 32768]})
+
+    with pytest.raises(ValueError, match="note_comment_a"):
+        build_workbook(frame, SHEET)
+
+
+def test_build_workbook_writes_a_comment_opening_on_an_equals_sign_as_text():
+    shorthand = ["=> voir le compte-rendu", "= idem", "=/= du CR initial"]
+    frame = pd.DataFrame({"n": [1, 2, 3], "note_comment_a": shorthand})
+
+    buffer = build_workbook(frame, SHEET)
+    sheet = load_workbook(buffer).worksheets[0]
+
+    assert [cell.data_type for cell in sheet["B"][1:]] == ["s", "s", "s"]
+
+    buffer.seek(0)
+
+    assert pd.read_excel(buffer, sheet_name=SHEET)["note_comment_a"].tolist() == shorthand
+
+
+@pytest.mark.parametrize("name", ["sheet", "SHEET", "ShEeT", "Sheet"])
+def test_build_workbook_styles_the_sheet_openpyxl_renames_under_it(name):
+    sheet = load_workbook(build_workbook(FRAME, name)).worksheets[0]
+
+    assert sheet["A1"].fill.fgColor.rgb.endswith("E5E5E5")
+    assert sheet["A1"].border.left.style == "thin"
 
 
 def test_build_workbook_exports_a_frame_with_no_rows():
@@ -148,6 +192,7 @@ def test_download_form_serves_the_export_on_a_matching_pair(secrets):
 
     assert button.label == LABEL
     assert button.proto.url.endswith(".xlsx")
+    assert button.proto.ignore_rerun
 
 
 def test_download_form_holds_the_notice_back_until_the_pair_matches(secrets):
@@ -186,6 +231,27 @@ def test_download_form_rejects_an_unknown_user_with_the_same_message(secrets):
     assert error_body(unknown) == error_body(wrong)
 
 
+def _render_two(path, data, options):
+    from edscrib.export import download
+
+    download(path, data, **options, key_button="button-export-a")
+    download(path, data, **options, key_button="button-export-b")
+
+
+def test_download_renders_twice_on_one_page_under_distinct_keys(secrets):
+    app = AppTest.from_function(
+        _render_two,
+        kwargs={
+            "path": str(secrets),
+            "data": FRAME,
+            "options": {"filename": SHEET, "label": LABEL},
+        },
+    ).run()
+
+    assert not app.exception
+    assert len(app.button) == 2
+
+
 def unreadable(tmp_path, kind):
     path = tmp_path / "secrets.toml"
 
@@ -218,6 +284,21 @@ def test_download_form_withholds_the_export_on_unreadable_secrets(tmp_path, kind
     assert message == MESSAGE_UNAVAILABLE
     assert str(path) not in message
     assert "annotator_a" not in message
+
+
+def test_download_form_withholds_the_export_when_the_workbook_cannot_be_built(
+    secrets, caplog
+):
+    illegal = pd.DataFrame({"n": [1], "note_comment_a": ["patient \x0b Mme Dupont"]})
+
+    app = submit(run_form(secrets, data=illegal), "annotator_a", USERS["annotator_a"])
+    message = error_body(app)
+
+    assert not app.exception
+    assert not app.download_button
+    assert message == MESSAGE_UNAVAILABLE
+    assert "Dupont" not in message
+    assert "Dupont" in caplog.text
 
 
 def test_download_form_builds_no_workbook_before_the_pair_matches(secrets, monkeypatch):
