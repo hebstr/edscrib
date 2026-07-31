@@ -3,8 +3,10 @@
 from io import BytesIO
 
 import pandas as pd
+import pyarrow as pa
 import pytest
 from openpyxl import load_workbook
+from openpyxl.cell.cell import ERROR_CODES
 from streamlit.testing.v1 import AppTest
 
 from edscrib.auth import MESSAGE_REJECTED, MESSAGE_UNAVAILABLE
@@ -108,6 +110,33 @@ def test_build_workbook_refuses_a_value_openpyxl_would_truncate():
         build_workbook(frame, SHEET)
 
 
+def test_build_workbook_refuses_a_truncated_value_an_arrow_backed_column_holds():
+    column = pd.Series(["x" * 32768], dtype=pd.ArrowDtype(pa.string()))
+    frame = pd.DataFrame({"n": [1], "note_comment_a": column})
+
+    with pytest.raises(ValueError, match="note_comment_a"):
+        build_workbook(frame, SHEET)
+
+
+def test_build_workbook_refuses_a_control_character_by_position_not_by_value():
+    comments = ["court", "patient \x0b Mme Dupont"]
+    frame = pd.DataFrame({"n": [1, 2], "note_comment_a": comments})
+
+    with pytest.raises(ValueError) as refusal:
+        build_workbook(frame, SHEET)
+
+    assert "note_comment_a" in str(refusal.value)
+    assert "position 1" in str(refusal.value)
+    assert "Dupont" not in str(refusal.value)
+
+
+def test_build_workbook_refuses_a_control_character_in_a_column_name():
+    frame = pd.DataFrame({"n": [1], "note\x0bcomment_a": ["court"]})
+
+    with pytest.raises(ValueError, match="column name"):
+        build_workbook(frame, SHEET)
+
+
 def test_build_workbook_writes_a_comment_opening_on_an_equals_sign_as_text():
     shorthand = ["=> voir le compte-rendu", "= idem", "=/= du CR initial"]
     frame = pd.DataFrame({"n": [1, 2, 3], "note_comment_a": shorthand})
@@ -122,12 +151,23 @@ def test_build_workbook_writes_a_comment_opening_on_an_equals_sign_as_text():
     assert pd.read_excel(buffer, sheet_name=SHEET)["note_comment_a"].tolist() == shorthand
 
 
+@pytest.mark.parametrize("code", ERROR_CODES)
+def test_build_workbook_writes_a_comment_equal_to_an_error_code_as_text(code):
+    frame = pd.DataFrame({"n": [1], "note_comment_a": [code]})
+
+    cell = load_workbook(build_workbook(frame, SHEET)).worksheets[0]["B2"]
+
+    assert cell.data_type == "s"
+    assert cell.value == code
+
+
 @pytest.mark.parametrize("name", ["sheet", "SHEET", "ShEeT", "Sheet"])
 def test_build_workbook_styles_the_sheet_openpyxl_renames_under_it(name):
     sheet = load_workbook(build_workbook(FRAME, name)).worksheets[0]
 
     assert sheet["A1"].fill.fgColor.rgb.endswith("E5E5E5")
     assert sheet["A1"].border.left.style == "thin"
+    assert sheet.freeze_panes == "A2"
 
 
 def test_build_workbook_exports_a_frame_with_no_rows():
@@ -298,7 +338,8 @@ def test_download_form_withholds_the_export_when_the_workbook_cannot_be_built(
     assert not app.download_button
     assert message == MESSAGE_UNAVAILABLE
     assert "Dupont" not in message
-    assert "Dupont" in caplog.text
+    assert "Dupont" not in caplog.text
+    assert "note_comment_a" in caplog.text
 
 
 def test_download_form_builds_no_workbook_before_the_pair_matches(secrets, monkeypatch):

@@ -7,7 +7,7 @@ from typing import Literal
 
 import pandas as pd
 import streamlit as st
-from openpyxl.cell.cell import Cell
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE, Cell
 from openpyxl.styles import Alignment, Border, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
@@ -36,17 +36,33 @@ def _finish_sheet(sheet: Worksheet) -> None:
     """Type, centre, border and widen every cell, then filter on the header row.
 
     A cell whose text opens on an equals sign is written as a formula, which is what
-    `openpyxl` makes of any such string, and it is demoted back to text here. An
-    annotation comment reading `=> voir le compte-rendu` otherwise reaches the operator
-    as `#NAME?` and reads back as nothing at all, silently, on the one field the
-    annotation exists to collect. The demotion holds because a text-typed cell is
-    written without a formula element, and it is what decides evaluation rather than
-    the literal content.
+    `openpyxl` makes of any such string, and it is demoted back to text here. One equal
+    to an Excel error code is written as an error cell, by a second branch of the same
+    binding, and is demoted with it. An annotation comment reading `=> voir le
+    compte-rendu` otherwise reaches the operator as `#NAME?` and reads back as nothing
+    at all, silently, on the one field the annotation exists to collect, and one reading
+    `#N/A` reaches it as an error for the same silence. The demotion holds because a
+    text-typed cell is written without a formula element, and it is what decides
+    evaluation rather than the literal content.
+
+    `#N/A` still reads back as nothing through `pandas` once demoted, its default
+    `na_values` carrying the literal, as it carries `NA`, `N/A`, `null` and `None` in
+    any text cell whatever its type. The cell is then right on disk and right in the
+    spreadsheet, and a reader reconciling the export against its source passes
+    `keep_default_na=False`. That is the consumer's to pass, no cell typing reaching it.
 
     It happens in this pass rather than its own: the traversal is the expensive half of
-    the export, and there is no reason to pay for it twice. What the traversal yields is
-    not only cells: a frame carrying a multi-level header merges its top row, and a
-    merged position is a placeholder whose type is fixed and cannot be assigned to.
+    the export, and there is no reason to pay for it twice. The header is frozen for the
+    same traversal's sake: the filter posed on the row above is read from a control that
+    scrolls away with it on the first page, which is where a reviewer starts wanting it.
+
+    What the traversal is typed to yield is not only cells, `iter_rows` giving
+    `Cell | MergedCell`, and a merged position declares no `data_type` among its slots,
+    so the assignment does not type without the narrowing. No merged position reaches
+    it: a multi-level header is the one thing that produces one, and `pandas` refuses to
+    write it beside the `index=False` this export is written with. The narrowing answers
+    the checker, and the branch it guards is dead at runtime, the expected cost of a
+    contract carrying a static form and a runtime one.
 
     A width is capped, the columns being widened holding free text no length bounds.
     The schema puts no ceiling on the attribute, but Office requires it between 0 and
@@ -76,7 +92,7 @@ def _finish_sheet(sheet: Worksheet) -> None:
         max_row=sheet.max_row,
     ):
         for cell in row:
-            if isinstance(cell, Cell) and cell.data_type == "f":
+            if isinstance(cell, Cell) and cell.data_type in {"f", "e"}:
                 cell.data_type = "s"
 
             cell.alignment = align
@@ -86,6 +102,8 @@ def _finish_sheet(sheet: Worksheet) -> None:
         cell.fill = fill
 
     sheet.auto_filter.ref = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"
+
+    sheet.freeze_panes = "A2"
 
 
 def build_workbook(data: pd.DataFrame, sheet_name: str) -> BytesIO:
@@ -104,15 +122,28 @@ def build_workbook(data: pd.DataFrame, sheet_name: str) -> BytesIO:
     and a lookup by name that finds nothing. One frame is written into a writer that
     holds no other sheet, so the last is the one just written.
 
-    Two limits are checked here rather than left to `openpyxl`, which passes both of
-    them and says so in a `UserWarning` nobody is listening for: a title over
-    thirty-one characters it keeps, against a workbook the spreadsheet may then refuse,
-    and a value over the cell limit it silently cuts, against a comment that leaves the
-    deployment shorter than the one the annotator wrote. Both are refusals rather than
-    repairs, the export being a copy of a gold standard and a copy that quietly differs
-    being worse than one that does not arrive. Only the columns pandas holds as objects
-    are measured, which is where a string lands, `str` included; no number or timestamp
-    reaches that length once rendered.
+    Three limits are checked here rather than left to the writing, which passes the
+    first two: a title over thirty-one characters `openpyxl` keeps, against a workbook
+    the spreadsheet may then refuse, and a value over the cell limit it cuts, against a
+    comment that leaves the deployment shorter than the one the annotator wrote. The
+    cut is announced, by `pandas` and not by `openpyxl`, in a `UserWarning` nobody is
+    listening for. All three are refusals rather than repairs, the export being a copy
+    of a gold standard and a copy that quietly differs being worse than one that does
+    not arrive.
+
+    The third is a control character, which `openpyxl` does refuse, and refuses by
+    naming the whole cell: caught at the display boundary, that message carries the
+    clinical text of a named patient into the server log, whose retention and readers
+    are those of the deployment's monitoring rather than those of the annotation. It is
+    refused here instead, naming the column and the position and never the value, which
+    is what locating the cell takes. A column name is read for the same character,
+    being written as a header and refused on the same grounds.
+
+    Text is what all three walk, and `kind` decides it: `O` is where a string lands
+    under this package's own reader, `str` and `category` included, and `U` is where an
+    arrow-backed one does, which a consumer passing `dtype_backend="pyarrow"` hands in.
+    Measuring `O` alone leaves that consumer's oversized comment to be cut in silence.
+    No number or timestamp reaches either limit once rendered.
     """
     if len(sheet_name) > _MAX_SHEET_NAME:
         raise ValueError(
@@ -120,16 +151,34 @@ def build_workbook(data: pd.DataFrame, sheet_name: str) -> BytesIO:
             f"and this one takes {len(sheet_name)} characters"
         )
 
-    for name, dtype in data.dtypes.items():
-        if dtype.kind != "O":
+    for name in data.columns:
+        if ILLEGAL_CHARACTERS_RE.search(str(name)):
+            raise ValueError(
+                f"A column name carries a control character no worksheet accepts, "
+                f"and {name!r} carries one"
+            )
+
+    for name, column in data.items():
+        if column.dtype.kind not in {"O", "U"}:
             continue
 
-        longest = data[name].astype("string").str.len().max()
+        text = column.astype("string")
+
+        longest = text.str.len().max()
 
         if pd.notna(longest) and longest > _MAX_CELL_LENGTH:
             raise ValueError(
                 f"A cell takes at most {_MAX_CELL_LENGTH} characters, "
                 f"and column {name} holds one of {longest} characters"
+            )
+
+        carries = text.str.contains(ILLEGAL_CHARACTERS_RE, regex=True, na=False)
+
+        if carries.any():
+            raise ValueError(
+                f"A cell carries a control character no worksheet accepts, "
+                f"and column {name} carries one at position "
+                f"{int(carries.to_numpy().argmax())}"
             )
 
     buffer = BytesIO()
@@ -160,7 +209,12 @@ def download_form(
 
     The pair is checked against the same secrets file as the login gate, so taking a
     gold standard out of the deployment is a deliberate second gate rather than one
-    click away in a tab left open. Which is also its cadence: the file is read on every
+    click away in a tab left open. It is the same `[users]` table and no other, so what
+    it asks for a second time is authentication and never authorisation: every annotator
+    who reaches the app reaches the whole gold standard, for every patient in it. What
+    the gate buys is that a tab left open on an unattended machine does not, and a
+    deployment wanting the export held to some annotators needs a distinction this file
+    does not carry. Which is also its cadence: the file is read on every
     rerun for as long as a password is typed, so a file that cannot be read withholds
     the button and never raises. An operator editing it to add a colleague would
     otherwise paint a traceback over the dialog of an annotator mid-session.
@@ -173,6 +227,12 @@ def download_form(
     the browser history of the annotator and any proxy the deployment sits behind. The
     package cannot close this, Streamlit exposing no other way to serve a download, so
     the operator reads it here rather than assuming the gate covers more than it does.
+
+    That digest is taken over the bytes, and the bytes carry the moment the workbook
+    was written, so two builds of one frame hash apart. What the store holds is one
+    entry per rerun that reaches the button and not one per export, each at a live URL
+    of its own. They stop answering together when the dialog closes, so the exposure
+    lasts the dialog and no longer; its width is the number of reruns.
 
     Neither input carries a `key`, so its value leaves the session when the dialog
     closes and the next opening asks again. `persist_state` is passed rather than
@@ -188,14 +248,20 @@ def download_form(
     which would build once but hand the failure to Streamlit's own handler, and with
     it an English message and a log line the operator does not read.
 
-    That build is the second boundary of this shell, and it catches broadly for what
-    it holds rather than for what it expects: `openpyxl` refuses a cell carrying a
-    control character, which clinical text pasted out of a PDF or an export does carry,
-    and it names the whole cell in the message. Uncaught, `client.showErrorDetails`
-    paints that message and the server's paths into the browser. The detail goes to the
-    module logger, where the operator reads the offending cell, against the one message
-    the secrets failure already renders: neither is anything the annotator can act on.
-    Streamlit's own control flow descends from `BaseException` and passes through.
+    That build is the second boundary of this shell, and it catches broadly for what it
+    holds rather than for what it expects. Uncaught, `client.showErrorDetails` paints a
+    message and the server's paths into the browser, and what the build raises is not
+    enumerable: `build_workbook`'s own refusals, and under them a writing that refuses a
+    timezone-aware datetime, a multi-level header and a frame past the sheet's own
+    dimensions, each in its own type. The detail goes to the module logger and one
+    message is rendered, against the one the secrets failure already renders: neither is
+    anything the annotator can act on. Streamlit's own control flow descends from
+    `BaseException` and passes through.
+
+    What reaches that logger is what `build_workbook` names, which is a column and a
+    position and never a value. The control character is refused there for that reason:
+    left to the writing, it comes back naming the whole cell, and the clinical text of a
+    named patient lands in the deployment's log.
     """
     username = st.text_input(label=LABEL_USERNAME, persist_state=None)
 
