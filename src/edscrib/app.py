@@ -95,9 +95,10 @@ def labelled_by_position(data: pd.DataFrame) -> bool:
     """Whether the rows are labelled from zero without a gap, as the cursor assumes.
 
     The cursor is a position and `save_notes` addresses a label, so the two designate
-    the same document on this labelling alone. Under any other one a save lands on
-    another document, or raises, or renormalizes the file and has the alignment guard
-    stop the app on the next rerun, naming the input for what the app itself did.
+    the same document on this labelling alone. Under any other one a save raises, the
+    identifier the render carried down no longer matching the row the label reaches, or
+    renormalizes the file and has the alignment guard stop the app on the next rerun,
+    naming the input for what the app itself did.
     """
     return data.index.equals(pd.RangeIndex(len(data)))
 
