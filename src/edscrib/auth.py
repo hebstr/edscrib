@@ -136,11 +136,18 @@ def verify_credentials(path: str | Path, username: str, password: str) -> bool:
     return False
 
 
-def login(path: str | Path, *, title: str = "Connexion", info: str = "") -> bool:
-    """Render the login form and tell whether the session is authenticated.
+def login(path: str | Path, *, title: str = "Connexion", info: str = "") -> str | None:
+    """Render the login form and return the annotator the session authenticated.
 
-    Returns True on a session that already authenticated, without rendering anything,
-    so the caller guards its own body on the result and stops on False.
+    Returns the name on a session that already authenticated, without rendering
+    anything, and None while it is not, so the caller guards its own body on the result
+    and stops on None.
+
+    The name is what it returns rather than a flag, so that nothing outside this module
+    has to read `st.session_state["user"]` to learn who is annotating. The two keys are
+    still both written, the already-authenticated path resting on them; what the return
+    removes is a caller having to know that, and an invariant between two keys the
+    caller could only check by reaching into the session of another module.
 
     The secrets are read on render, before anyone types, so a deployment pointed at a
     missing or shapeless file withholds the form rather than answering a submission.
@@ -202,17 +209,21 @@ def login(path: str | Path, *, title: str = "Connexion", info: str = "") -> bool
             state["password_correct"] = False
 
     if state.get("password_correct"):
-        if "user" not in state:
-            raise KeyError("'password_correct' is set without 'user' in st.session_state")
+        user = state.get("user")
 
-        return True
+        if not isinstance(user, str):
+            raise KeyError(
+                "'password_correct' is set without a 'user' name in st.session_state"
+            )
+
+        return user
 
     try:
         load_secrets(path)
     except SecretsError:
         _logger.exception("Secrets unusable, holding the login form back")
         st.error(MESSAGE_UNAVAILABLE)
-        return False
+        return None
 
     _, col, _ = st.columns([1, 3, 1])
 
@@ -235,4 +246,4 @@ def login(path: str | Path, *, title: str = "Connexion", info: str = "") -> bool
     if "password_correct" in state and not state["password_correct"]:
         st.error(MESSAGE_REJECTED)
 
-    return False
+    return None

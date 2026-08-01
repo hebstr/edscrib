@@ -113,7 +113,7 @@ def test_login_renders_the_form_and_holds_the_session_out(secrets):
     app = run_login(secrets)
 
     assert not app.exception
-    assert not app.session_state["authenticated"]
+    assert app.session_state["authenticated"] is None
     assert [field.key for field in app.text_input] == ["username", "password"]
     assert not app.error
 
@@ -145,7 +145,7 @@ def test_login_admits_a_matching_pair_and_leaves_no_password_in_the_session(secr
     app.text_input(key="username").input("annotator_a")
     app.text_input(key="password").input(USERS["annotator_a"]).run()
 
-    assert app.session_state["authenticated"]
+    assert app.session_state["authenticated"] == "annotator_a"
     assert app.session_state["user"] == "annotator_a"
     assert "password" not in app.session_state
 
@@ -162,7 +162,7 @@ def _reject(secrets, username, password):
 def test_login_rejects_a_wrong_password_without_naming_which_field(secrets):
     app = _reject(secrets, "annotator_a", USERS["annotator_b"])
 
-    assert not app.session_state["authenticated"]
+    assert app.session_state["authenticated"] is None
     assert not app.session_state["password_correct"]
     assert "user" not in app.session_state
 
@@ -176,20 +176,35 @@ def test_login_rejects_an_unknown_user_with_the_same_message(secrets):
     unknown = _reject(secrets, "annotator_c", USERS["annotator_a"])
     wrong = _reject(secrets, "annotator_a", USERS["annotator_b"])
 
-    assert not unknown.session_state["authenticated"]
+    assert unknown.session_state["authenticated"] is None
     assert unknown.error[0].value == wrong.error[0].value
 
 
 def test_login_lets_an_authenticated_session_through_without_a_form(secrets):
     app = run_login(secrets, seed={"password_correct": True, "user": "annotator_a"})
 
-    assert app.session_state["authenticated"]
+    assert app.session_state["authenticated"] == "annotator_a"
     assert app.session_state["user"] == "annotator_a"
     assert not app.text_input
 
 
 def test_login_refuses_a_session_marked_correct_without_its_user(secrets):
     app = run_login(secrets, seed={"password_correct": True})
+
+    assert app.exception
+    assert "user" in app.exception[0].value
+    assert not app.text_input
+
+
+def test_login_refuses_a_session_whose_user_is_not_a_name(secrets):
+    """What earns the annotation, on the one key the return is read out of.
+
+    A value taken out of `st.session_state` is `Any`, so returning it would type-check
+    every caller against a promise nothing verified. The narrowing is that verification,
+    and it covers the same class of setup mistake as the guard above: a session marked
+    correct that carries no name anyone can annotate under.
+    """
+    app = run_login(secrets, seed={"password_correct": True, "user": 42})
 
     assert app.exception
     assert "user" in app.exception[0].value
@@ -203,7 +218,7 @@ def test_login_withholds_the_form_on_a_missing_secrets_file(tmp_path):
 
     assert not app.exception
     assert not app.text_input
-    assert not app.session_state["authenticated"]
+    assert app.session_state["authenticated"] is None
     assert str(absent) not in app.error[0].value
 
 
@@ -352,7 +367,7 @@ def test_login_still_admits_a_correct_pair_after_a_rejected_attempt(secrets):
     app.text_input(key="username").input("annotator_a")
     app.text_input(key="password").input(USERS["annotator_a"]).run()
 
-    assert app.session_state["authenticated"]
+    assert app.session_state["authenticated"] == "annotator_a"
     assert app.session_state["user"] == "annotator_a"
 
 
