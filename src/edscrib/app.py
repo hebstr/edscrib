@@ -1035,6 +1035,11 @@ def _render_sidebar(
     The gauge is keyed on the number of saves and the fields on the cursor, which is the
     difference between them: the gauge counts what reached the disk across the whole run
     and stands still on an arrow, where a field belongs to one document.
+
+    Every element the containers below hold is written as a bare `st.` call. An
+    `st.sidebar.` one lands in the sidebar all the same, and reads as equivalent, but
+    it resolves to the sidebar rather than to the enclosing `with`, so the container
+    comes out empty and its key names nothing to style.
     """
     state = st.session_state
     nrow = len(df_output)
@@ -1117,7 +1122,7 @@ def _render_sidebar(
 
     with st.sidebar.container(key="sidebar-footer"):
         for heading, name in config.footer_fields.items():
-            st.sidebar.html(
+            st.html(
                 text_style
                 + f"<p class='sidebar-footer-title'>{heading}</p>"
                 + f"<p class='sidebar-footer-{name}'>{df_output[name].iloc[index]}</p>"

@@ -144,6 +144,34 @@ def container_keys(app):
     ]
 
 
+def container(app, key):
+    """The sidebar container a name keys, which is what a stylesheet hooks on.
+
+    An element written as an `st.sidebar.` call lands in the sidebar beside the
+    container rather than inside it, so reading the sidebar's own children would pass
+    on a key that names an empty block.
+    """
+    for item in app.sidebar.children.values():
+        if getattr(getattr(item, "proto", None), "id", "").split("-", 2)[-1] == key:
+            return item
+
+    raise AssertionError(f"no container carries the key {key!r}")
+
+
+def container_holds(app, key):
+    """The kind of each element a named container carries."""
+    return [getattr(item, "type", "") for item in container(app, key).children.values()]
+
+
+def footer_blocks(app):
+    """What each block of the footer carries, stylesheet and all."""
+    return [
+        item.proto.body
+        for item in container(app, "sidebar-footer").children.values()
+        if getattr(item, "type", "") == "html"
+    ]
+
+
 ### STYLESHEET -----------------------------------------------------------------
 
 
@@ -539,10 +567,26 @@ def test_the_download_container_names_the_visibility_declared(project):
 
 
 def test_the_footer_renders_one_block_per_declared_field(project):
+    """Inside the container, its key being the seam a stylesheet hooks the footer on."""
     config, _ = project
 
-    assert sidebar_kinds(run(config)).count("html") == 1
-    assert sidebar_kinds(run(replace(config, footer_fields={}))).count("html") == 0
+    assert container_holds(run(config), "sidebar-footer") == ["html"]
+    assert container_holds(run(replace(config, footer_fields={})), "sidebar-footer") == []
+
+
+def test_the_footer_is_painted_under_the_text_stylesheet(project):
+    """It paints a fragment of the document, which carries the document's own classes.
+
+    `st.html` renders into the page rather than into an iframe, so this is also where a
+    text sheet reaches the app.
+    """
+    config, _ = project
+
+    assert footer_blocks(run(config)) == [
+        "<style>p {}</style>"
+        "<p class='sidebar-footer-title'>EXTRACTION</p>"
+        "<p class='sidebar-footer-extract'>un extrait</p>"
+    ]
 
 
 def test_a_footer_column_the_data_stopped_carrying_is_named_on_the_way_in(

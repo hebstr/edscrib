@@ -124,15 +124,28 @@ class Styles:
 
     The package ships neither, and the two roles are the whole of what it knows about
     them. `app` reaches the page itself and styles what the render lays out, keyed on
-    the container names below; `text` is prefixed to the two places the render embeds
-    markup a page-level sheet cannot reach, the frame holding the document and the
-    sidebar footer.
+    the container names below. `text` is the sheet the document's own markup is painted
+    under, and it is prefixed to the two places that markup reaches a reader: the frame
+    holding the document, and the sidebar footer, which paints a fragment lifted from
+    the document and carries the document's classes with it.
 
-    The render emits container keys, which Streamlit turns into `st-key-<name>` classes:
-    `button-tuto`, `slider-doc`, `navigation`, `slider-note`, `sidebar-footer`, and
-    `button-download-visible` or `button-download-hidden`. Those names are the seam
-    `app` styles against, so they are part of what this package promises rather than an
-    implementation detail.
+    Only the first of those two is an iframe. The footer goes through `st.html`, which
+    renders into the page, so a `text` sheet reaches the page there and whatever it
+    declares outside its own class selectors lands on the app.
+
+    A `run_app` page emits ten container keys, which Streamlit turns into
+    `st-key-<name>` classes. Six are the render's own: `button-tuto`, `slider-doc`,
+    `navigation`, `slider-note`, `sidebar-footer`, and `button-download-visible` or
+    `button-download-hidden`. Four are the default parameters of the two functions the
+    render calls, `navigation` and `download`: `button-backward`, `button-save`,
+    `button-forward` and `button-export`. A direct caller of those two names its own, a
+    `run_app` consumer cannot, so all ten are the seam `app` styles against and part of
+    what this package promises rather than an implementation detail.
+
+    Nothing else is. Every `key` becomes such a class, and the render's own widget keys
+    fold in the cursor or the number of saves, so they name a position in a run rather
+    than a place on a page; the login form's two fields are keyed so the session can
+    hold and drop the password, not so a sheet can find them.
     """
 
     app: Path
