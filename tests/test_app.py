@@ -31,7 +31,7 @@ from edscrib.app import (
     unresolved_fields,
     write_output,
 )
-from edscrib.config import USER, AnnotConfig, FieldGroup, NoteField
+from edscrib.config import USER, AnnotConfig, FieldGroup, NoteField, Tuto
 
 ID = "id_doc"
 TEXT = "doc_text"
@@ -237,7 +237,7 @@ def test_unresolved_fields_is_empty_on_a_configuration_carrying_no_placeholder(t
         ("id_field", f"id_{USER}", f"id_{USER}"),
         ("meta_fields", {f"pat_{USER}": f"ÂGE {USER}"}, f"pat_{USER}"),
         ("table_fields", ("n", f"note_{USER}"), f"note_{USER}"),
-        ("tuto", (Path(f"{USER}.webm"), Path("t.vtt")), f"{USER}.webm"),
+        ("tuto", Tuto(text=Path(f"{USER}.md"), media=Path("t.webm")), f"{USER}.md"),
     ],
     ids=["work-dir", "suffix", "column", "meta-key", "table-field", "asset"],
 )
@@ -392,6 +392,41 @@ def test_load_frames_stops_on_two_fields_the_binding_put_on_one_column(project, 
     assert app.error[0].value == MESSAGE_UNAVAILABLE
     assert ESTIMATE not in app.error[0].value
     assert f"Two fields are declared on ['{COMMENT}', '{ESTIMATE}']" in caplog.text
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("table_fields", ("n", TEXT)),
+        ("meta_fields", {TEXT: "COMPTE-RENDU"}),
+        ("index_field", TEXT),
+    ],
+    ids=["table", "meta", "index"],
+)
+def test_load_frames_stops_on_a_declaration_naming_the_document_text(
+    project, field, value, caplog
+):
+    """The output is what every declared column is read from, and it carries no text.
+
+    `build_output` drops it unconditionally, so the summary table is sourced from the
+    output and a consumer asking it for the clinical text is asking for a column that
+    cannot exist. Without this the run stopped on the declared-column guard instead,
+    which names a column the operator then goes looking for in a data generation that
+    is not wrong.
+
+    Every declaration is covered and not the table alone: the same name reaches the
+    output through the metadata or the counter just as well, and the failure and the
+    remedy are the same wherever it was written.
+    """
+    config, output = project
+
+    app = run_shell(replace(config, **{field: value}))
+
+    assert not app.exception
+    assert app.error[0].value == MESSAGE_UNAVAILABLE
+    assert TEXT not in app.error[0].value
+    assert f"The document text is declared as a column: '{TEXT}'" in caplog.text
     assert not output.exists()
 
 

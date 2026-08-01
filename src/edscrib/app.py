@@ -481,16 +481,25 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
     configuration that was never resolved, and the traceback names the one component
     that broke the path first where the guard enumerates every string still carrying it.
     Nothing is written between the two positions, so the move buys the class of the
-    failure rather than the failure itself. The duplicate-column check goes with it,
-    reading the configuration and nothing else on the same argument, and neither takes
-    the lock: what they refuse is true of the deployment before any file is opened.
+    failure rather than the failure itself. The duplicate-column check goes with it and
+    the text-declaration one after them, all three reading the configuration and nothing
+    else on the same argument, and none of them takes the lock: what they refuse is true
+    of the deployment before any file is opened. The declared set the last one reads is
+    built there for the same reason and reused under the lock, being a derivation of the
+    configuration rather than of anything on the disk.
 
     The declared columns are checked against the output, which is what makes
     `table_fields` a description of the output's own columns rather than the input's.
-    `build_output` drops the text and adds the annotation, so a table field naming the
-    text stops the app on every run. Which of the two frames a table reads is the
-    rendering half's to settle; until it does, this guard is what fixes it to the
-    output.
+    That is a decision and no longer an accident: the summary table is sourced from the
+    output, so an excerpt of the clinical text is a column the input generation creates,
+    which reaches the output through the first copy like any other.
+
+    Which is why the text itself, declared anywhere, is refused by name and up front.
+    `build_output` drops it unconditionally, so the column cannot exist in the output
+    and the check against it would report a name the operator then goes looking for in
+    a data generation that is not wrong. Every declaration is covered rather than the
+    table alone, the metadata and the counter reaching the same comparison, and the
+    remedy is one wherever it was written.
 
     Every rendered field is declared, not only the persisted ones. A group shown for
     reference and never written owns columns `build_output` does not create: they reach
@@ -595,6 +604,24 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
             st.error(MESSAGE_UNAVAILABLE)
             st.stop()
 
+        declared = tuple(
+            dict.fromkeys(
+                (
+                    config.id_field,
+                    *config.export_fields,
+                    *config.table_fields,
+                    *(field.name for field in config.rendered),
+                )
+            )
+        )
+
+        if config.text_field in declared:
+            _logger.error(
+                "The document text is declared as a column: %r", config.text_field
+            )
+            st.error(MESSAGE_UNAVAILABLE)
+            st.stop()
+
         paths = (config.work_dir, config.proj, config.split)
         input_path = data_path(*paths, config.input_stem, config.data_suffix)
         output_path = data_path(*paths, config.output_stem, config.data_suffix)
@@ -648,16 +675,6 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
                 st.error(MESSAGE_LABELS)
                 st.stop()
 
-            declared = tuple(
-                dict.fromkeys(
-                    (
-                        config.id_field,
-                        *config.export_fields,
-                        *config.table_fields,
-                        *(field.name for field in config.rendered),
-                    )
-                )
-            )
             missing = missing_fields(df_output, declared)
 
             if missing:
