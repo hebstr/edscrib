@@ -12,7 +12,10 @@ from streamlit.testing.v1 import AppTest
 
 from edscrib.app import (
     MESSAGE_COLUMNS,
+    MESSAGE_DUPLICATES,
     MESSAGE_LABELS,
+    MESSAGE_MISMATCH,
+    MESSAGE_TYPES,
     MESSAGE_UNAVAILABLE,
     MESSAGE_VALUES,
     _stamp,
@@ -22,6 +25,9 @@ from edscrib.app import (
     load_frames,
     missing_fields,
     needs_write,
+    repeated_ids,
+    retyped_fields,
+    same_file,
     unresolved_fields,
     write_output,
 )
@@ -288,6 +294,28 @@ def test_load_frames_stops_on_a_configuration_that_was_never_resolved(project, c
     assert not output.exists()
 
 
+@pytest.mark.parametrize("component", ["work_dir", "split", "input_stem"])
+def test_load_frames_names_a_placeholder_left_in_a_path_component(
+    project, component, caplog
+):
+    """The guard walks the fields the paths are built from, so it runs ahead of them.
+
+    Behind the read, each of these names a file nothing ever wrote: the operator is
+    handed a `FileNotFoundError` and sent to the data generation for a configuration
+    that was never resolved. The assertion is on the class of the failure, which is all
+    the ordering decides, nothing being written between the two positions either way.
+    """
+    config, output = project
+    value = str(Path(config.work_dir) / USER) if component == "work_dir" else USER
+    app = run_shell(replace(config, **{component: value}))
+
+    assert not app.exception
+    assert app.error[0].value == MESSAGE_UNAVAILABLE
+    assert "The configuration was never resolved" in caplog.text
+    assert "FileNotFoundError" not in caplog.text
+    assert not output.exists()
+
+
 def test_load_frames_names_a_reference_column_the_output_does_not_carry(project, caplog):
     """A group shown for reference owns columns `build_output` never creates.
 
@@ -353,6 +381,144 @@ def test_load_frames_stops_on_two_fields_the_binding_put_on_one_column(project, 
     assert not output.exists()
 
 
+def test_load_frames_stops_on_a_field_annotating_a_column_the_input_carries(
+    project, caplog
+):
+    """The annotation lands on the metadata and nothing downstream can see it.
+
+    `build_output` creates a column only where the frame has none, so the field inherits
+    the input's values in place of the sentinel, the save writes the answer over them,
+    and `frozen_fields` drops the column from its comparison for being one the annotation
+    writes. The export then ships the mixture under the metadata's own header.
+    """
+    config, output = project
+    collided = replace(
+        config,
+        groups=(
+            FieldGroup(
+                fields=(
+                    NoteField("pat_age", "ÂGE ?", "radio", VALUES),
+                    NoteField(COMMENT, "COMMENTAIRE", "text"),
+                ),
+            ),
+        ),
+        table_fields=("n", "pat_age"),
+    )
+
+    app = run_shell(collided)
+
+    assert not app.exception
+    assert app.error[0].value == MESSAGE_UNAVAILABLE
+    assert "pat_age" not in app.error[0].value
+    assert "A field annotates the input column ['pat_age']" in caplog.text
+    assert not output.exists()
+
+
+def test_load_frames_accepts_a_reference_field_reading_a_column_of_the_input(project):
+    """A reconciliation app shows a prior annotator's answer, which the input carries.
+
+    The guard above reads `persisted_fields` and not `rendered` for this: nothing writes
+    a non-persisted field, `build_output` never touches it and `frozen_fields` does cover
+    it, so widening the guard would stop the very app a reference group exists for.
+    """
+    config, output = project
+    folder = Path(config.work_dir) / "data" / "2023-01"
+    reviewed = make_input(note_estimate_b="oui", note_comment_b="")
+    reviewed.to_parquet(folder / "2023-01_avc_annot_data_input-review.parquet")
+    merged = replace(
+        config,
+        groups=(
+            FieldGroup(
+                fields=(
+                    NoteField("note_estimate_b", "AVC_B", "radio", VALUES),
+                    NoteField("note_comment_b", "COMMENTAIRE_B", "text"),
+                ),
+                persisted=False,
+            ),
+            *config.groups,
+        ),
+    )
+
+    app = run_shell(merged)
+
+    assert not app.exception
+    assert not app.error
+    assert output.exists()
+
+
+def test_repeated_ids_names_the_positions_and_never_the_values():
+    """The identifier is patient-linked, and the log is the deployment's to read."""
+    data = make_input().assign(**{ID: ["d0", "d1", "d1"]})
+
+    assert repeated_ids(data, ID) == [1, 2]
+    assert repeated_ids(make_input(), ID) == []
+
+
+def test_load_frames_stops_on_an_identifier_designating_two_documents(project, caplog):
+    """What rests on the answer is the save's re-check, at the click.
+
+    A run extended with a document that shares its identifier with the one it displaces
+    leaves that check comparing a value against itself, so it accepts the write onto
+    either document. Nothing else asks: the alignment guard compares the two frames
+    against each other and the labelling guard constrains another axis.
+    """
+    config, output = project
+    folder = Path(config.work_dir) / "data" / "2023-01"
+    repeated = make_input().assign(**{ID: ["d0", "d1", "d1"]})
+    repeated.to_parquet(folder / "2023-01_avc_annot_data_input-review.parquet")
+
+    app = run_shell(config)
+
+    assert not app.exception
+    assert app.error[0].value == MESSAGE_DUPLICATES
+    assert "d1" not in app.error[0].value
+    assert "d1" not in caplog.text
+    assert "One identifier designates the documents at [1, 2]" in caplog.text
+    assert not output.exists()
+
+
+def test_same_file_asks_the_kernel_where_the_two_names_differ(tmp_path):
+    """A lexical comparison answers none of the ways one file takes two names."""
+    target = tmp_path / "target.parquet"
+    target.write_bytes(b"x")
+    linked = tmp_path / "linked.parquet"
+    linked.symlink_to(target)
+    hard = tmp_path / "hard.parquet"
+    os.link(target, hard)
+
+    assert same_file(target, target)
+    assert same_file(target, linked)
+    assert same_file(target, hard)
+    assert not same_file(target, tmp_path / "elsewhere.parquet")
+
+    dangling = tmp_path / "dangling.parquet"
+    dangling.symlink_to(tmp_path / "absent.parquet")
+
+    assert not same_file(target, dangling)
+
+
+def test_load_frames_stops_on_a_second_name_for_the_input(project, caplog):
+    """Nothing is destroyed this way, and the deliverable keeps the clinical text.
+
+    `Path.replace` takes the link's own entry rather than its target, so the input
+    survives where a folded case would lose it. What lands instead is an output built by
+    resuming on the input, text column and all, which is what the export reads.
+    """
+    config, output = project
+    folder = Path(config.work_dir) / "data" / "2023-01"
+    source = folder / "2023-01_avc_annot_data_input-review.parquet"
+    output.symlink_to(source)
+
+    app = run_shell(config)
+
+    assert not app.exception
+    assert app.error[0].value == MESSAGE_UNAVAILABLE
+    assert str(source) not in app.error[0].value
+    assert str(source) in caplog.text
+    assert output.is_symlink()
+    assert ESTIMATE not in pd.read_parquet(output).columns
+
+
 def test_load_frames_stops_on_two_stems_resolving_to_one_file(project, caplog):
     """Without this one the app annotates the input and no second copy is left.
 
@@ -387,12 +553,21 @@ def test_frozen_fields_names_the_columns_the_output_records_differently():
     assert frozen_fields(df_input, df_output, ("n", ID)) == []
 
 
-def test_frozen_fields_compares_only_the_columns_both_frames_carry():
-    """The annotation's columns are what the output adds, the text what it drops."""
+def test_frozen_fields_raises_on_a_name_a_frame_does_not_carry():
+    """Skipping it would exempt the column from the comparison written to catch it.
+
+    A regenerated input that dropped a declared column is what reaches this, and an
+    intersection would answer that nothing changed. The caller establishes presence on
+    both frames, as it does for the identifier `aligned` compares.
+    """
     df_input = make_input()
     df_output = df_input.drop(columns=[TEXT]).assign(**{ESTIMATE: "oui"})
 
-    assert frozen_fields(df_input, df_output, (TEXT, ESTIMATE, "pat_age")) == []
+    with pytest.raises(KeyError, match=TEXT):
+        frozen_fields(df_input, df_output, (TEXT, "pat_age"))
+
+    with pytest.raises(KeyError, match=ESTIMATE):
+        frozen_fields(df_input, df_output, (ESTIMATE, "pat_age"))
 
 
 def test_load_frames_stops_on_an_input_corrected_after_the_output_was_built(
@@ -419,6 +594,32 @@ def test_load_frames_stops_on_an_input_corrected_after_the_output_was_built(
     assert "pat_age" not in app.error[0].value
     assert "pat_age" in caplog.text
     assert list(pd.read_parquet(output)["pat_age"]) == [70, 70, 70]
+
+
+def test_load_frames_stops_on_a_declared_column_the_input_no_longer_carries(
+    project, caplog
+):
+    """The output froze its copy, so the guard reading it alone cannot see one leave.
+
+    A column removed upstream, deliberately or not, was served and exported from that
+    frozen copy on every later run with nothing rendered and nothing logged, the value
+    comparison having dropped the name for want of something to compare it against.
+    """
+    config, output = project
+    folder = Path(config.work_dir) / "data" / "2023-01"
+    source = folder / "2023-01_avc_annot_data_input-review.parquet"
+
+    assert not run_shell(config).error
+    assert list(pd.read_parquet(output)["pat_age"]) == [70, 70, 70]
+
+    make_input().drop(columns=["pat_age"]).to_parquet(source)
+
+    app = run_shell(config)
+
+    assert not app.exception
+    assert app.error[0].value == MESSAGE_COLUMNS
+    assert "pat_age" not in app.error[0].value
+    assert "The input no longer carries ['pat_age']" in caplog.text
 
 
 ### WRITE CONDITION ------------------------------------------------------------
@@ -558,6 +759,109 @@ def test_load_frames_does_not_write_over_a_save_it_waited_for(project):
     assert list(pd.read_parquet(output)[ESTIMATE]) == ["oui", "non", ""]
 
 
+@pytest.mark.parametrize(
+    ("column", "dtype"),
+    [("pat_age", "Int64"), ("pat_age", "float64"), (ID, "string")],
+)
+def test_retyped_fields_names_a_column_whose_type_moved_under_equal_values(column, dtype):
+    """`Series.equals` answers on the values and the dtype at once, this one on neither.
+
+    The values are held equal across the pair on purpose: what the guard has to see is
+    the type alone, since that is the case the two comparisons downstream misreport.
+    """
+    df_input = make_input().astype({column: dtype})
+    df_output = make_input()
+
+    assert retyped_fields(df_input, df_output, (column,)) == [column]
+    assert not retyped_fields(df_output, df_output, (column,))
+    assert not df_input[column].equals(df_output[column])
+
+
+def test_retyped_fields_raises_on_a_name_a_frame_does_not_carry():
+    """The same contract its sibling carries, and the same reason to keep it.
+
+    Both frames are established to hold every name before either is called. Softening
+    the lookup into a skip would exempt from the type comparison exactly the column a
+    reshaped input dropped, which is the one it exists for, and nothing would be
+    rendered or logged.
+    """
+    df_output = make_input()
+    df_input = df_output.drop(columns=["pat_age"])
+
+    with pytest.raises(KeyError):
+        retyped_fields(df_input, df_output, ("pat_age",))
+
+
+@pytest.mark.parametrize("column", ["pat_age", ID])
+def test_load_frames_names_a_type_that_moved_rather_than_a_value_or_a_cohort(
+    project, column, caplog
+):
+    """One drift reported by two guards as two things that did not happen.
+
+    A metadata column came back as values that changed and the identifier as a cohort
+    that did, and the rebuild both prescribe reproduces the type it is regenerated by,
+    so the app stayed stopped with the annotation intact and out of reach. Asserting the
+    two old messages are absent is what carries the fix; asserting the run still stops
+    is what keeps it from being a loosening.
+    """
+    config, output = project
+    folder = Path(config.work_dir) / "data" / "2023-01"
+    started = make_input().drop(columns=[TEXT]).assign(**{ESTIMATE: "", COMMENT: ""})
+    started.to_parquet(output, index=False)
+    dtype = "string" if column == ID else "Int64"
+    make_input().astype({column: dtype}).to_parquet(
+        folder / "2023-01_avc_annot_data_input-review.parquet"
+    )
+
+    app = run_shell(config)
+
+    assert not app.exception
+    assert app.error[0].value == MESSAGE_TYPES
+    assert app.error[0].value not in (MESSAGE_VALUES, MESSAGE_MISMATCH)
+    assert f"'{column}': '{dtype} against " in caplog.text
+
+
+def test_load_frames_refuses_a_reshaped_input_without_waiting_on_the_output_lock(
+    project, caplog
+):
+    """The lock spans the build and the write, and the input guards stand ahead of it.
+
+    Held inside it, a guard that opens nothing and reads a frame already in memory makes
+    one annotator wait on another's save before being told their input is unusable. The
+    wait is what this asserts: the run completes while the lock is held by someone else.
+
+    It runs on its own thread against a timeout rather than in line, so a regression that
+    puts the guard back under the lock fails here instead of hanging the suite.
+    """
+    config, output = project
+    folder = Path(config.work_dir) / "data" / "2023-01"
+    reshaped = make_input().drop(columns=[ID])
+    reshaped.to_parquet(folder / "2023-01_avc_annot_data_input-review.parquet")
+
+    holder = FileLock(f"{output}.lock")
+    holder.acquire()
+
+    stopped = threading.Event()
+    seen = {}
+
+    def load():
+        seen["app"] = run_shell(config)
+        stopped.set()
+
+    reader = threading.Thread(target=load)
+    reader.start()
+
+    try:
+        assert stopped.wait(5)
+    finally:
+        holder.release()
+        reader.join(5)
+
+    assert seen["app"].error[0].value == MESSAGE_COLUMNS
+    assert f"The input does not carry ['{ID}']" in caplog.text
+    assert not output.exists()
+
+
 ### SHELL ----------------------------------------------------------------------
 
 
@@ -639,6 +943,68 @@ def test_load_frames_stops_on_an_input_whose_rows_are_not_labelled_by_position(p
     assert not app.exception
     assert app.error[0].value == MESSAGE_LABELS
     assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    ("scenario", "named"),
+    [
+        ("upstream", "['input', 'output']"),
+        ("resumed", "['input']"),
+        ("drifted", "['output']"),
+    ],
+)
+def test_load_frames_names_which_frame_is_mislabelled(project, scenario, named, caplog):
+    """One message covers two frames whose remedies differ, so the log forks it.
+
+    Three states are reachable and each prescribes something else. A mislabelled input
+    with nothing built yet carries its labels into the output `build_output` derives
+    from it, and both are named: the remedy is upstream. Against an output already on
+    the disk the same input is named alone, that output being resumed rather than
+    derived. And an output whose labels drifted under a sound input is named alone in
+    turn, where the remedy is to discard it and rebuild it from that input.
+
+    Asserting the frame that is absent is what carries the fork: a line naming both
+    every time would read the same and prescribe nothing.
+    """
+    config, output = project
+    folder = Path(config.work_dir) / "data" / "2023-01"
+    source = folder / "2023-01_avc_annot_data_input-review.parquet"
+    started = make_input().drop(columns=[TEXT]).assign(**{ESTIMATE: "", COMMENT: ""})
+
+    if scenario == "upstream":
+        make_input().set_axis([2, 0, 1], axis=0).to_parquet(source)
+    elif scenario == "resumed":
+        make_input().set_axis([2, 0, 1], axis=0).to_parquet(source)
+        started.to_parquet(output, index=False)
+    else:
+        started.set_axis([0, 1, 5], axis=0).to_parquet(output)
+
+    app = run_shell(config)
+
+    assert not app.exception
+    assert app.error[0].value == MESSAGE_LABELS
+    assert f"The rows of the {named} are not labelled by position" in caplog.text
+
+
+def test_load_frames_stops_on_two_frames_designating_different_documents(project, caplog):
+    """The alignment guard, whose stop had no coverage at the app's own boundary.
+
+    The two row counts are what the page cannot carry and what forks the remedy: a
+    cohort that changed size is not one that was reordered. The identifiers themselves
+    are patient-linked and stay out of the log, as they do at every other guard.
+    """
+    config, output = project
+    started = (
+        make_input(rows=2).drop(columns=[TEXT]).assign(**{ESTIMATE: "", COMMENT: ""})
+    )
+    started.to_parquet(output, index=False)
+
+    app = run_shell(config)
+
+    assert not app.exception
+    assert app.error[0].value == MESSAGE_MISMATCH
+    assert "3 rows against 2" in caplog.text
+    assert "d0" not in caplog.text
 
 
 @pytest.mark.parametrize("broken", ["absent", "truncated"])

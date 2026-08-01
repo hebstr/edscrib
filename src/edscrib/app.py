@@ -20,17 +20,32 @@ from edscrib.io import build_output, data_path, read_data
 
 MESSAGE_MISMATCH = (
     "The output was built on a different input: its document ids no longer match, "
-    "in value or in order. Rebuild the input before annotating."
+    "in value or in order. Rebuild the input before annotating. The detail is in the "
+    "server log, which the deployment operator reads."
 )
 
 MESSAGE_LABELS = (
     "The documents are not labelled from zero without a gap, so a position in the run "
-    "no longer designates the row it shows. Rebuild the data before annotating."
+    "no longer designates the row it shows. Rebuild the data before annotating. The "
+    "detail is in the server log, which the deployment operator reads."
+)
+
+MESSAGE_DUPLICATES = (
+    "The documents are not identified one by one: an identifier designates more than "
+    "one of them, so a save can no longer tell which it was written on. Rebuild the "
+    "data before annotating. The detail is in the server log, which the deployment "
+    "operator reads."
 )
 
 MESSAGE_COLUMNS = (
     "The data no longer carries every column the annotation declares. The detail is in "
     "the server log, which the deployment operator reads."
+)
+
+MESSAGE_TYPES = (
+    "The output and the input no longer read a column they share as the same type, so "
+    "their values can no longer be compared. The annotation already recorded is intact. "
+    "The detail is in the server log, which the deployment operator reads."
 )
 
 MESSAGE_VALUES = (
@@ -96,6 +111,36 @@ def _strings(value: object) -> Iterator[str]:
             yield from _strings(item)
 
 
+def same_file(input_path: str | Path, output_path: str | Path) -> bool:
+    """Whether the two paths designate one file, by their names or by the kernel's.
+
+    The names alone are not the question. Both are built from one directory, project,
+    split and suffix and differ in the stem, so two stems differing only in case name
+    one file wherever the storage folds it, which a CIFS share mounted `nocase` does and
+    a case-insensitive server does whatever the client asked for; and either name can be
+    a link onto the other. The kernel's own identity, the device and the inode, answers
+    all of those at once where a lexical comparison answers none, and normalizing the
+    case would answer none either, `os.path.normcase` being a no-op on POSIX.
+
+    What follows from the collision differs by the way it was reached and is unwanted
+    every way. Folded onto one directory entry, the write replaces the raw input with
+    the merged frame. Through a link, the replace takes the entry rather than its
+    target, so the input survives and the gold standard keeps the clinical text
+    `build_output` drops, which is what the export reads its columns out of. Either way
+    every guard downstream compares the file against itself and passes.
+
+    The kernel is asked only where both names exist, an absent one designating nothing
+    to collide with. That leaves a dangling link answering `False` here, which is right:
+    nothing is built yet, and the read behind it fails into the boundary.
+    """
+    paths = (Path(input_path), Path(output_path))
+
+    if paths[0] == paths[1]:
+        return True
+
+    return all(path.exists() for path in paths) and paths[0].samefile(paths[1])
+
+
 def unresolved_fields(config: AnnotConfig) -> list[str]:
     """Every string the configuration carries that still names the placeholder.
 
@@ -153,6 +198,60 @@ def missing_fields(data: pd.DataFrame, fields: tuple[str, ...]) -> list[str]:
     return sorted(set(fields) - set(data.columns))
 
 
+def repeated_ids(data: pd.DataFrame, id_field: str) -> list[int]:
+    """The positions whose identifier designates more than one document.
+
+    The positions and never the values: the identifier is patient-linked, and what a
+    guard hands the log is read by the deployment's monitoring rather than by the
+    annotation. A position is what the operator needs to find the row anyway.
+
+    An identifier repeated is what makes the save's own identity check vacuous. That
+    check re-reads the row under the lock and compares the document the annotator was
+    shown against the one the position now holds, which is the only place the assumption
+    is observable at all; on two documents sharing an identifier it compares a value
+    against itself and accepts the write onto either.
+    """
+    repeated = data[id_field].duplicated(keep=False)
+    return [position for position, flag in enumerate(repeated) if flag]
+
+
+def retyped_fields(
+    df_input: pd.DataFrame,
+    df_output: pd.DataFrame,
+    fields: tuple[str, ...],
+) -> list[str]:
+    """The declared columns the two frames no longer read as the same type.
+
+    `Series.equals` answers on the values and on the dtype at once, so a column whose
+    type moved between the first build and now is reported by the value comparison as a
+    value that changed, and by the alignment comparison as ids that stopped matching.
+    Neither is what happened, and both prescribe rebuilding an input that is not wrong:
+    a regeneration reproduces the type it was regenerated by, so the app stays stopped
+    on the same message with the accumulated annotation intact and out of reach.
+
+    That is not a hypothetical drift. The output is written once at the first build and
+    read back a release later, and a round trip through parquet is where a pandas
+    default or an arrow-backed read lands a column on another type for the same values.
+
+    Asked before the two comparisons rather than beside them, since it is what makes
+    either of them mean anything: they answer on values, and two types are not a value
+    that changed. Nothing is loosened by it. An identifier that moved from an integer to
+    a float still stops the app, which is the collapse past the mantissa that `save_notes`
+    reads through the package's own reader to avoid; what changes is that the operator
+    is told the type moved instead of being sent to rebuild against it.
+
+    Naming the column is not enough for that, and the caller logs the two types beside
+    it. The remedy is not at the data layer at all: the type a column reads as comes
+    from the environment doing the reading, so what unsticks the app is a pinned library
+    or a rewritten schema on the output, and neither is reachable from a message that
+    says only which column disagreed. A type names no patient, so it is a detail the log
+    can carry whole.
+    """
+    return sorted(
+        name for name in fields if df_input[name].dtype != df_output[name].dtype
+    )
+
+
 def frozen_fields(
     df_input: pd.DataFrame,
     df_output: pd.DataFrame,
@@ -166,11 +265,16 @@ def frozen_fields(
     guards while the correction reaches neither the frame the app renders nor the
     export, which reads those columns out of the output.
 
-    Only the columns both frames carry are compared: the annotation's own columns are
-    what the output adds, and the text is what it drops.
+    Both frames are expected to carry every name passed, which the two column guards
+    establish ahead of every call: the annotation's own columns are dropped by the
+    caller, and the text is one no declared name survives to reach. A frame without one
+    does not answer the question, it invalidates it, so the lookup is left to raise
+    rather than folded into an intersection that skips the name. Skipping it would
+    exempt a column the regenerated input dropped from the very comparison written to
+    catch that column changing, and the app would go on serving and exporting the copy
+    frozen at the first build with nothing rendered and nothing logged.
     """
-    shared = set(fields) & set(df_input.columns) & set(df_output.columns)
-    return sorted(name for name in shared if not df_input[name].equals(df_output[name]))
+    return sorted(name for name in fields if not df_input[name].equals(df_output[name]))
 
 
 def needs_write(on_disk: pd.DataFrame | None, note_fields: tuple[str, ...]) -> bool:
@@ -234,6 +338,10 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
     copy left, which the rebuild the guards prescribe would erase. That one is a
     configuration defect and goes to the log alone.
 
+    Two stems that differ still make one file where the storage folds their case or one
+    name links onto the other, so the question is asked of the kernel and not of the two
+    strings, `same_file` carrying what each of those costs.
+
     A name is one column, so two fields carrying the same one after the binding are
     refused. The binding is what makes that reachable: a group naming an annotator
     literally, for reference, and a persisted group naming the same annotator through
@@ -243,6 +351,27 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
     annotation is exactly the one spanning a group that writes and a group that does
     not, and no guard reading the persisted names alone can see it.
 
+    An identifier designates one document, so an input repeating one is refused before
+    anything is built on it. The alignment guard compares the two frames against each
+    other and the labelling guard constrains the index, which is another axis, so
+    neither asks the question; and a repeated identifier is what a join fanning out
+    upstream produces. What rests on the answer is the save's own re-check, which reads
+    the identifier as an identity at the one moment the cursor's assumption is
+    observable, and which on two documents sharing one compares a value against itself.
+    The guard is here so nothing is persisted on it, and again in `save_notes` because
+    this one observed the frames a rerun boundary before the click.
+
+    A persisted field names a column the annotation creates, so one the input already
+    carries is refused. `build_output` creates a column only where the frame has none, so
+    the field inherits the input's values in place of the sentinel, the save writes the
+    annotation over them, and the frozen-value guard is blind to it by construction: the
+    name sits in `persisted_fields`, which is precisely what that guard drops from its
+    comparison. The check reads the input's own columns rather than a list of the names
+    the configuration reserves, since what the field lands on is whatever the input
+    happens to carry and not what the configuration says about it. A non-persisted field
+    is left alone: `build_output` never touches it and the frozen-value guard does cover
+    it, which is how a reconciliation app shows a prior annotator's answer.
+
     The configuration is expected resolved, and a string still carrying the placeholder
     stops the app rather than reaching the disk or the page: `build_output` would create
     the column literally, every guard would pass against it on every later run, and the
@@ -250,6 +379,17 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
     a label carrying it reaches the annotator beside the clinical question with no
     feedback path at all. The audience of that one is whoever deployed the app, so it
     goes to the log alone.
+
+    It is asked first, ahead of the paths that are built from the very fields it walks.
+    A placeholder in the working directory, the project, the split, a stem or the suffix
+    names a file nothing ever wrote, so the read fails and the boundary below renders a
+    file that could not be opened: the operator is sent to the data generation for a
+    configuration that was never resolved, and the traceback names the one component
+    that broke the path first where the guard enumerates every string still carrying it.
+    Nothing is written between the two positions, so the move buys the class of the
+    failure rather than the failure itself. The duplicate-column check goes with it,
+    reading the configuration and nothing else on the same argument, and neither takes
+    the lock: what they refuse is true of the deployment before any file is opened.
 
     The declared columns are checked against the output, which is what makes
     `table_fields` a description of the output's own columns rather than the input's.
@@ -268,10 +408,53 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
     the frozen-value guard covers them too: a reference answer the input has since
     corrected stops the app rather than being reconciled against in its stale form.
 
+    Those same columns are asked of the input as well, and not of the output alone. The
+    output carries every one of them by construction, having frozen its copy at the
+    first build, so the declared-column guard above cannot see one leave the input; and
+    a name the input no longer carries is a name the value comparison would have had
+    nothing to compare, which is how a column removed upstream went on being served and
+    exported from the frozen copy with nothing rendered and nothing logged. The audience
+    differs from the value guard's: one says the schema moved, the other says a value
+    did, and a removal deliberate enough to be the point of the regeneration is exactly
+    the one that must not read as a drifting value.
+
+    Once both frames are known to carry those columns, they are asked to agree on the
+    type of them before either comparison reads a value, `retyped_fields` carrying what
+    that ordering is worth. It is why the alignment guard follows the input's own column
+    check rather than preceding it: the identifier is one of the columns whose type can
+    move, so the check that establishes the question has to run before the guard that
+    would otherwise answer it wrong.
+
+    Every guard logs what the page withholds, and says on the page that it did. The
+    withholding is by disclosure: a column, a path, a row count and a position are each
+    read by whoever is looking at the browser, and a guard is not the place to hand them
+    over. What follows is that the page alone never resolves the remedy, so a message
+    that named no log left the operator with a prescription and no way to apply it. The
+    labelling guard is where that costs the most: it reads two frames, the message names
+    neither, and the two remedies are opposite, a mislabelled input being rebuilt
+    upstream where a mislabelled output is discarded and rebuilt from the input. The
+    alignment guard's two row counts separate a cohort that changed size from one that
+    was reordered, which is the same fork.
+
     Reading the output, deciding whether it has to be written and writing it happen
     under one lock, the one `save_notes` takes. Deciding outside it would have a save
     landing between the read and the write, and the write would put the frame read
     before that save back on the disk.
+
+    The lock spans that and no more. Every guard reading the input alone stands ahead of
+    it: the frame they read is already in memory, they open nothing, and holding an
+    exclusive lock over them makes one annotator's reshaped input wait on another's
+    save before being refused. The guards between the build and the write stay inside,
+    where they belong, reading a frame the lock is what makes current.
+
+    The output is read twice under it, once by `build_output` and once for the write
+    decision, and that stands. The decision reads what the file carries where the build
+    returns a frame it has already added the annotation columns to, so the second read
+    is not the first one's result: collapsing them moves the resumption decision out of
+    `build_output`, whose whole contract it is. Measured on the annotation's own scale,
+    the redundant read is 2.9 ms over 500 documents, 5.2 ms over 5000 and 9.5 ms over
+    50000. The unit of work above it is a clinician reading a clinical note, and nothing
+    here asks for those milliseconds back at the price of that coupling.
 
     This is the boundary the reads are caught at. A missing file, an unreadable one, a
     truncated parquet and a missing column each raise naming the deployment path or the
@@ -279,47 +462,73 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
     whoever is looking. The detail goes to the module log, one message goes to the page.
     The guards below stop the script through `ScriptControlException`, which descends
     from `BaseException` and so passes through the clause untouched.
+
+    That raise is the runner's own and not `st.stop`'s, whose body requests a stop and
+    forces a yield point where the enqueued message is handled. It is reached on the
+    script thread and inside the exec alone, and each guard here is one statement
+    followed by another, so every one of them rests on that single condition. With no
+    run context
+    the call does nothing whatever; from the worker thread of a `parallel=True` fragment
+    the yield point consults a coordinator whose stop event the request never sets, and
+    streamlit's own `_check_not_parallel_worker` is wired to nothing in 1.60. The guard
+    then logs, renders and returns, and everything after it runs, down to the write:
+    entered that way with two stems resolving to one file, this replaces the raw input
+    with the merged frame, which is the outcome its first guard exists to prevent. The
+    data path belongs on the script thread for that reason, and a worker pool would
+    break its lock discipline before it broke its guards.
     """
     try:
+        unresolved = unresolved_fields(config)
+
+        if unresolved:
+            _logger.error("The configuration was never resolved: %s", unresolved)
+            st.error(MESSAGE_UNAVAILABLE)
+            st.stop()
+
+        declared_twice = sorted(
+            name
+            for name, count in Counter(field.name for field in config.rendered).items()
+            if count > 1
+        )
+
+        if declared_twice:
+            _logger.error("Two fields are declared on %s", declared_twice)
+            st.error(MESSAGE_UNAVAILABLE)
+            st.stop()
+
         paths = (config.work_dir, config.proj, config.split)
         input_path = data_path(*paths, config.input_stem, config.data_suffix)
         output_path = data_path(*paths, config.output_stem, config.data_suffix)
 
-        if input_path == output_path:
-            _logger.error("The input and the output resolve to %s", input_path)
+        if same_file(input_path, output_path):
+            _logger.error("One file answers to %s and to %s", input_path, output_path)
             st.error(MESSAGE_UNAVAILABLE)
             st.stop()
 
         df_input = _read_input(input_path, _stamp(input_path))
 
+        missing = missing_fields(df_input, (config.id_field, config.text_field))
+
+        if missing:
+            _logger.error("The input does not carry %s", missing)
+            st.error(MESSAGE_COLUMNS)
+            st.stop()
+
+        repeated = repeated_ids(df_input, config.id_field)
+
+        if repeated:
+            _logger.error("One identifier designates the documents at %s", repeated)
+            st.error(MESSAGE_DUPLICATES)
+            st.stop()
+
+        overwritten = sorted(set(config.persisted_fields) & set(df_input.columns))
+
+        if overwritten:
+            _logger.error("A field annotates the input column %s", overwritten)
+            st.error(MESSAGE_UNAVAILABLE)
+            st.stop()
+
         with FileLock(f"{output_path}.lock", is_singleton=True):
-            missing = missing_fields(df_input, (config.id_field, config.text_field))
-
-            if missing:
-                _logger.error("The input does not carry %s", missing)
-                st.error(MESSAGE_COLUMNS)
-                st.stop()
-
-            unresolved = unresolved_fields(config)
-
-            if unresolved:
-                _logger.error("The configuration was never resolved: %s", unresolved)
-                st.error(MESSAGE_UNAVAILABLE)
-                st.stop()
-
-            declared_twice = sorted(
-                name
-                for name, count in Counter(
-                    field.name for field in config.rendered
-                ).items()
-                if count > 1
-            )
-
-            if declared_twice:
-                _logger.error("Two fields are declared on %s", declared_twice)
-                st.error(MESSAGE_UNAVAILABLE)
-                st.stop()
-
             df_output = build_output(
                 df_input,
                 output_path,
@@ -327,15 +536,28 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
                 config.persisted_fields,
             )
 
-            if not labelled_by_position(df_input) or not labelled_by_position(df_output):
+            mislabelled = [
+                name
+                for name, frame in (("input", df_input), ("output", df_output))
+                if not labelled_by_position(frame)
+            ]
+
+            if mislabelled:
+                _logger.error(
+                    "The rows of the %s are not labelled by position", mislabelled
+                )
                 st.error(MESSAGE_LABELS)
                 st.stop()
 
-            declared = (
-                config.id_field,
-                *config.export_fields,
-                *config.table_fields,
-                *(field.name for field in config.rendered),
+            declared = tuple(
+                dict.fromkeys(
+                    (
+                        config.id_field,
+                        *config.export_fields,
+                        *config.table_fields,
+                        *(field.name for field in config.rendered),
+                    )
+                )
             )
             missing = missing_fields(df_output, declared)
 
@@ -344,18 +566,42 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
                 st.error(MESSAGE_COLUMNS)
                 st.stop()
 
+            frozen = tuple(
+                name for name in declared if name not in config.persisted_fields
+            )
+            missing = missing_fields(df_input, frozen)
+
+            if missing:
+                _logger.error("The input no longer carries %s", missing)
+                st.error(MESSAGE_COLUMNS)
+                st.stop()
+
+            retyped = retyped_fields(df_input, df_output, frozen)
+
+            if retyped:
+                _logger.error(
+                    "The input and the output read %s",
+                    {
+                        name: f"{df_input[name].dtype} against {df_output[name].dtype}"
+                        for name in retyped
+                    },
+                )
+                st.error(MESSAGE_TYPES)
+                st.stop()
+
             if not aligned(df_input, df_output, config.id_field):
+                _logger.error(
+                    "The two frames designate different documents, %d rows against %d",
+                    len(df_input),
+                    len(df_output),
+                )
                 st.error(MESSAGE_MISMATCH)
                 st.stop()
 
-            frozen = frozen_fields(
-                df_input,
-                df_output,
-                tuple(name for name in declared if name not in config.persisted_fields),
-            )
+            drifted = frozen_fields(df_input, df_output, frozen)
 
-            if frozen:
-                _logger.error("The output was built on other values for %s", frozen)
+            if drifted:
+                _logger.error("The output was built on other values for %s", drifted)
                 st.error(MESSAGE_VALUES)
                 st.stop()
 

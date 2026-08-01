@@ -131,6 +131,24 @@ def test_save_notes_refuses_a_duplicate_away_from_the_row_it_writes(tmp_path):
     assert pd.read_parquet(path).index.tolist() == [0, 5, 5]
 
 
+def test_save_notes_refuses_an_identifier_carried_by_two_documents(tmp_path):
+    """Otherwise the check below compares a value against itself and accepts either row.
+
+    The app's own guard on this observed the frames a rerun boundary earlier, which is
+    the reason `expected_id` exists at all, so it is re-asked here as the labelling one
+    already is.
+    """
+    path = tmp_path / "output.parquet"
+    pd.DataFrame({"n": [0, 1, 1], ESTIMATE: [""] * 3, COMMENT: [""] * 3}).to_parquet(
+        path, index=False
+    )
+
+    with pytest.raises(ValueError, match="identifier more than once"):
+        save_notes(path, 1, {ESTIMATE: "oui"}, id_field="n", expected_id=1)
+
+    assert pd.read_parquet(path)[ESTIMATE].tolist() == [""] * 3
+
+
 def test_save_notes_refuses_a_row_that_no_longer_holds_the_document(tmp_path):
     path = tmp_path / "output.parquet"
     pd.DataFrame({"n": [0, 1, 2, 3], ESTIMATE: [""] * 4, COMMENT: [""] * 4}).to_parquet(

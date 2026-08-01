@@ -83,6 +83,14 @@ def save_notes(
     annotation lands on the wrong patient and no later read can tell. Re-reading the
     identifier under the lock is the only place the assumption is observable.
 
+    That check reads an identifier as an identity, so one carried by two documents is
+    refused ahead of it, here and not only where the app reads the frames. Against the
+    very extension above, an inserted document sharing its identifier with the one it
+    displaces leaves the comparison holding a value against itself, and it accepts the
+    write onto either document. The load-time guard cannot stand in for this one: it
+    observed the frames a rerun boundary earlier, which is the whole reason `expected_id`
+    exists, and the labelling check beside it is re-run here for the same reason.
+
     The frame lands on a sibling path and is moved onto the target, so an interrupted
     write leaves the accumulated run readable instead of truncating it, and a reader
     taking no lock sees either the old file or the new one.
@@ -105,6 +113,9 @@ def save_notes(
 
         if unknown:
             raise KeyError(f"{unknown} are not fields of {path}")
+
+        if fresh[id_field].duplicated().any():
+            raise ValueError(f"{path} carries a document identifier more than once")
 
         found = fresh.loc[index, id_field]
 
