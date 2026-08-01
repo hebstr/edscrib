@@ -17,46 +17,14 @@ from filelock import FileLock
 
 from edscrib.config import USER, AnnotConfig
 from edscrib.io import build_output, data_path, read_data
-
-MESSAGE_MISMATCH = (
-    "The output was built on a different input: its document ids no longer match, "
-    "in value or in order. Rebuild the input before annotating. The detail is in the "
-    "server log, which the deployment operator reads."
-)
-
-MESSAGE_LABELS = (
-    "The documents are not labelled from zero without a gap, so a position in the run "
-    "no longer designates the row it shows. Rebuild the data before annotating. The "
-    "detail is in the server log, which the deployment operator reads."
-)
-
-MESSAGE_DUPLICATES = (
-    "The documents are not identified one by one: an identifier designates more than "
-    "one of them, so a save can no longer tell which it was written on. Rebuild the "
-    "data before annotating. The detail is in the server log, which the deployment "
-    "operator reads."
-)
-
-MESSAGE_COLUMNS = (
-    "The data no longer carries every column the annotation declares. The detail is in "
-    "the server log, which the deployment operator reads."
-)
-
-MESSAGE_TYPES = (
-    "The output and the input no longer read a column they share as the same type, so "
-    "their values can no longer be compared. The annotation already recorded is intact. "
-    "The detail is in the server log, which the deployment operator reads."
-)
-
-MESSAGE_VALUES = (
-    "The output was built on different values: a column the input carries no longer "
-    "matches what the output records. The detail is in the server log, which the "
-    "deployment operator reads."
-)
-
-MESSAGE_UNAVAILABLE = (
-    "The annotation data could not be opened. The detail is in the server log, which "
-    "the deployment operator reads."
+from edscrib.messages import (
+    MESSAGE_COLUMNS,
+    MESSAGE_DUPLICATES,
+    MESSAGE_LABELS,
+    MESSAGE_MISMATCH,
+    MESSAGE_TYPES,
+    MESSAGE_UNAVAILABLE,
+    MESSAGE_VALUES,
 )
 
 _logger = logging.getLogger(__name__)

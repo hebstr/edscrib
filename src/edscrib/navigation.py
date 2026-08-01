@@ -9,17 +9,7 @@ import streamlit as st
 from filelock import FileLock
 
 from edscrib.io import read_data
-
-MESSAGE_CURSOR = (
-    "The annotation is not set up to move through its documents. The detail is in the "
-    "server log, which the deployment operator reads."
-)
-
-MESSAGE_SAVE = (
-    "The annotation was not saved, and the document it was written on is unchanged. "
-    "Reload the page before annotating further. The detail is in the server log, which "
-    "the deployment operator reads."
-)
+from edscrib.messages import MESSAGE_CURSOR, MESSAGE_SAVE
 
 _logger = logging.getLogger(__name__)
 

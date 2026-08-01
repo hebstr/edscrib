@@ -12,13 +12,12 @@ from openpyxl.styles import Alignment, Border, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from edscrib.auth import (
+from edscrib.auth import SecretsError, verify_credentials
+from edscrib.messages import (
     LABEL_PASSWORD,
     LABEL_USERNAME,
     MESSAGE_REJECTED,
     MESSAGE_UNAVAILABLE,
-    SecretsError,
-    verify_credentials,
 )
 
 _logger = logging.getLogger(__name__)

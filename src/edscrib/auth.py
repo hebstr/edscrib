@@ -1,10 +1,10 @@
 """Gating an annotation app behind the credentials of a deployment.
 
-The copy a shell renders when it asks for a pair lives here in module constants, so
-that a deployment asking twice, at the login gate and again before an export, does not
-drift into two spellings of one sentence. The rejection is the one that matters: it
-names both fields so that it tells nobody which of the two was wrong, and a second copy
-of it is a second chance to name only one.
+The copy a shell renders when it asks for a pair comes from `edscrib.messages`, as all
+of it does, so that a deployment asking twice, at the login gate and again before an
+export, does not drift into two spellings of one sentence. The rejection is the one
+that matters: it names both fields so that it tells nobody which of the two was wrong,
+and a second copy of it is a second chance to name only one.
 """
 
 import hmac
@@ -15,12 +15,15 @@ from pathlib import Path
 
 import streamlit as st
 
-_logger = logging.getLogger(__name__)
+from edscrib.messages import (
+    LABEL_PASSWORD,
+    LABEL_USERNAME,
+    MESSAGE_REJECTED,
+    MESSAGE_UNAVAILABLE,
+    TITLE_LOGIN,
+)
 
-LABEL_USERNAME = "Identifiant"
-LABEL_PASSWORD = "Mot de passe"
-MESSAGE_REJECTED = "😕 Nom d'utilisateur ou mot de passe incorrect"
-MESSAGE_UNAVAILABLE = "Service indisponible : contactez l'administrateur."
+_logger = logging.getLogger(__name__)
 
 
 class SecretsError(Exception):
@@ -136,7 +139,7 @@ def verify_credentials(path: str | Path, username: str, password: str) -> bool:
     return False
 
 
-def login(path: str | Path, *, title: str = "Connexion", info: str = "") -> str | None:
+def login(path: str | Path, *, title: str = TITLE_LOGIN, info: str = "") -> str | None:
     """Render the login form and return the annotator the session authenticated.
 
     Returns the name on a session that already authenticated, without rendering

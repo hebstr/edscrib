@@ -8,9 +8,8 @@ import pytest
 from filelock import FileLock
 from streamlit.testing.v1 import AppTest
 
+from edscrib.messages import MESSAGE_CURSOR, MESSAGE_SAVE
 from edscrib.navigation import (
-    MESSAGE_CURSOR,
-    MESSAGE_SAVE,
     next_index,
     previous_index,
     save_notes,

@@ -9,8 +9,8 @@ from openpyxl import load_workbook
 from openpyxl.cell.cell import ERROR_CODES
 from streamlit.testing.v1 import AppTest
 
-from edscrib.auth import MESSAGE_REJECTED, MESSAGE_UNAVAILABLE
 from edscrib.export import _MAX_COLUMN_WIDTH, build_workbook
+from edscrib.messages import MESSAGE_REJECTED, MESSAGE_UNAVAILABLE
 
 USERS = {"annotator_a": "sept-chevaux"}
 SHEET = "2023-01_avc_annotator_a"

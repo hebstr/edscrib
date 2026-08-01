@@ -11,13 +11,6 @@ from filelock import FileLock
 from streamlit.testing.v1 import AppTest
 
 from edscrib.app import (
-    MESSAGE_COLUMNS,
-    MESSAGE_DUPLICATES,
-    MESSAGE_LABELS,
-    MESSAGE_MISMATCH,
-    MESSAGE_TYPES,
-    MESSAGE_UNAVAILABLE,
-    MESSAGE_VALUES,
     _stamp,
     aligned,
     frozen_fields,
@@ -32,6 +25,15 @@ from edscrib.app import (
     write_output,
 )
 from edscrib.config import USER, AnnotConfig, FieldGroup, NoteField, Tuto
+from edscrib.messages import (
+    MESSAGE_COLUMNS,
+    MESSAGE_DUPLICATES,
+    MESSAGE_LABELS,
+    MESSAGE_MISMATCH,
+    MESSAGE_TYPES,
+    MESSAGE_UNAVAILABLE,
+    MESSAGE_VALUES,
+)
 
 ID = "id_doc"
 TEXT = "doc_text"
