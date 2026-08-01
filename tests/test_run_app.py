@@ -7,6 +7,7 @@ tutorial's own body is exercised as the plain function it is.
 """
 
 import re
+from base64 import b64decode
 from dataclasses import replace
 from pathlib import Path
 
@@ -24,9 +25,11 @@ from edscrib.app import (
 )
 from edscrib.config import AnnotConfig, FieldGroup, NoteField, Styles, Tuto
 from edscrib.messages import (
+    LABEL_DOWNLOAD,
     LABEL_PASSWORD,
     LABEL_TUTO,
     LABEL_USERNAME,
+    MESSAGE_POSITION,
     MESSAGE_UNAVAILABLE,
 )
 
@@ -125,15 +128,24 @@ def sidebar_kinds(app):
     return [getattr(item, "type", "") for item in app.sidebar.children.values()]
 
 
-def framed_document(app):
-    """What the frame holding the clinical note carries, stylesheet and all."""
+def document_frame(app):
+    """The frame holding the clinical note."""
     for block in app.main.children.values():
         for column in getattr(block, "children", {}).values():
             for element in getattr(column, "children", {}).values():
                 if getattr(element, "type", "") == "iframe":
-                    return element.proto.srcdoc
+                    return element
 
     raise AssertionError("no frame holds the document")
+
+
+def framed_document(app):
+    """What that frame carries, stylesheet and all, read back off its source."""
+    head, _, payload = document_frame(app).proto.src.partition("base64,")
+
+    assert head == "data:text/html;charset=utf-8;"
+
+    return b64decode(payload).decode("utf-8")
 
 
 def container_keys(app):
@@ -337,6 +349,33 @@ def test_the_page_renders_without_reaching_the_browser(project):
     assert not app.error
 
 
+@pytest.mark.parametrize("cursor", [97, -1], ids=["past-the-run", "below-the-run"])
+def test_a_position_the_run_no_longer_holds_stops_the_page(project, caplog, cursor):
+    """The cursor is the one input the render reads that no guard of the data path sees.
+
+    It cannot leave the range of the run it was moved in, every mover clamping, and it
+    leaves the range of a later one: the data are regenerated smaller while a tab stays
+    open, which is the operator action several of those guards prescribe on their own
+    message. The page then told the annotator to call the administrator, on every later
+    run, where reloading is what restores the tab.
+
+    The position below the run is what makes the check worth its line rather than a
+    clamp: `iloc` reads it as a position from the end and `st.slider` widens its own
+    bounds around a value below its minimum, so the last document of the run rendered
+    under the first position with nothing said at all.
+    """
+    config, output = project
+    started(output, ["oui", "", ""])
+
+    app = run(config, doc_index=cursor, save_count=0)
+
+    assert not app.exception
+    assert [error.value for error in app.error] == [MESSAGE_POSITION]
+    assert app.radio.values == []
+    assert f"position {cursor} of a run of 3" in caplog.text
+    assert str(cursor) not in MESSAGE_POSITION
+
+
 def test_the_session_carries_the_cursor_and_the_count_of_saves(project):
     """`navigation` stops the app without them, and it is this render that seeds them."""
     config, _ = project
@@ -407,6 +446,36 @@ def test_the_document_is_framed_with_the_stylesheet_written_for_it(project):
     config, _ = project
 
     assert framed_document(run(config)) == "<style>p {}</style><p>compte rendu</p>"
+
+
+def test_the_document_is_loaded_as_a_source_and_never_as_the_frame_own_markup(project):
+    """Markup the corpus carries must not run script against the page it is painted in.
+
+    Streamlit renders a frame's inline markup under `allow-same-origin allow-scripts`,
+    which together leave the frame the app's own origin: a note carrying a script would
+    read the annotator's authenticated page and drive the widgets that write the gold
+    standard, at a layer none of the data path's guards observes. A document loaded from
+    a `data:` URL carries an opaque origin whatever that sandbox allows.
+    """
+    config, _ = project
+
+    assert document_frame(run(config)).proto.WhichOneof("type") == "src"
+
+
+def test_the_document_is_framed_as_it_is_and_nothing_of_it_is_stripped(project):
+    """The other half: the frame contains the note rather than repairing it.
+
+    A sanitiser would alter a clinical document silently, on a page whose whole purpose
+    is that a clinician reads what the record holds.
+    """
+    config, _ = project
+    folder = Path(config.work_dir) / "data" / "2023-01"
+    note = "<p>TA < 90</p><script>parent.document.title='pris'</script>"
+    frame = make_input(**dict.fromkeys(REFERENCE, "oui"))
+    frame.loc[:, TEXT] = note
+    frame.to_parquet(folder / "2023-01_avc_annot_data_input-review.parquet")
+
+    assert framed_document(run(config)).endswith(note)
 
 
 def test_the_summary_table_carries_the_columns_the_configuration_declares(project):
@@ -535,6 +604,34 @@ def test_a_radio_selects_nothing_on_an_answer_its_options_no_longer_offer(projec
     assert pd.read_parquet(output)[ANSWERED][0] == "ancien"
 
 
+def test_a_save_writes_the_answer_the_annotator_has_on_screen(project):
+    """The click and the change it commits arrive together, and the callback runs first.
+
+    Streamlit applies the browser's widget values and then calls the click callbacks,
+    both before the page body re-executes. A save reading an entry the body writes
+    therefore reads the last completed render, which is one gesture behind: the
+    correction lands in the file as the value it was meant to correct, the cursor
+    advances and nothing is rendered to say so.
+    """
+    config, output = project
+    started(output, ["oui", "", ""])
+
+    app = AppTest.from_function(script, kwargs={"config": config})
+    app.session_state["doc_index"] = 0
+    app.session_state["save_count"] = 0
+    app.run()
+
+    app.radio[0].set_value("non")
+    app.text_input[0].input("commentaire du clinicien")
+    app.button[1].click()
+    app.run()
+
+    saved = pd.read_parquet(output)
+
+    assert saved[ANSWERED][0] == "non"
+    assert saved["note_comment_admin"][0] == "commentaire du clinicien"
+
+
 def test_the_save_button_is_held_back_until_the_document_is_answered(project):
     config, output = project
 
@@ -548,6 +645,27 @@ def test_the_save_button_is_held_back_until_the_document_is_answered(project):
 ### GAUGE, EXPORT AND FOOTER ---------------------------------------------------
 
 
+def test_the_gauge_is_not_a_control_the_annotator_can_move(project):
+    """It reports what the file holds, and a widget that can be moved stops doing that.
+
+    A value the browser submits under a key outlives every interaction that does not
+    move that key, and this one moves on a save alone: a gauge nudged between two saves
+    reads three of three on a run with a document unanswered, which is the one question
+    the sidebar exists to answer, and only a reload or a save takes it back. The
+    attribute below is the frontend's, so what it withholds is the drag and the tab
+    order rather than a crafted message; that one reaches this annotator's own display
+    and nothing else, no callback hanging off this widget and its value being read
+    nowhere. The document slider beside it is a control and stays one.
+    """
+    config, output = project
+    started(output, ["oui", "non", ""])
+
+    app = run(config)
+
+    assert app.slider[1].proto.disabled
+    assert not app.slider[0].proto.disabled
+
+
 def test_the_gauge_counts_the_documents_answered(project):
     config, output = project
     started(output, ["oui", "non", ""])
@@ -555,6 +673,26 @@ def test_the_gauge_counts_the_documents_answered(project):
     app = run(config)
 
     assert app.slider[1].value == 2
+
+
+def test_the_export_is_not_offered_where_it_is_not_declared_visible(project):
+    """The field decides here, where naming a container left the decision elsewhere.
+
+    A container key is a seam a stylesheet hooks on, and that sheet lives in the
+    consuming deployment: a rule dropped, a file not yet in place or a class prefix
+    moved by a version bump would put the export back on a page that declared it away,
+    with nothing in the package to notice. The container is still named either way,
+    both names being what this package promises a sheet.
+    """
+    config, _ = project
+
+    assert container_holds(run(config), "button-download-hidden") == []
+    assert LABEL_DOWNLOAD not in [item.label for item in run(config).button]
+
+    visible = run(replace(config, download_visible=True))
+
+    assert container_holds(visible, "button-download-visible") == ["button"]
+    assert LABEL_DOWNLOAD in [item.label for item in visible.button]
 
 
 def test_the_download_container_names_the_visibility_declared(project):

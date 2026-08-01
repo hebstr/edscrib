@@ -129,7 +129,7 @@ def save_notes(
 def navigation(
     path: str | Path,
     nrow: int,
-    note_fields: tuple[str, ...],
+    note_keys: Mapping[str, str],
     *,
     columns: tuple[float, float, float],
     can_save: bool,
@@ -158,6 +158,16 @@ def navigation(
     makes it the signal for anything displaying the output rather than one document.
     Keying a note widget on it would hold one document's answer across a move to the
     next, and offer it for saving there.
+
+    `note_keys` maps each output column an answer is written to onto the session entry
+    that carries it, and the two are not one name. Streamlit applies the browser's
+    values to the entries a widget keys and then calls the click callbacks, both before
+    the page body runs again, so an entry the body itself writes is one completed render
+    behind at the instant this save reads it: the answer changed in the same gesture as
+    the click is the one that does not reach the file, and what lands there instead is
+    the value the annotator was correcting, with no error, the cursor advancing and the
+    counter moving. A caller whose widgets are keyed on the column itself passes the
+    identity mapping and reads what it always did.
 
     `columns` carries the three relative widths the row is laid out on, one per button.
     The annotation says three, which is what a consumer running a type checker hears
@@ -213,7 +223,7 @@ def navigation(
             save_notes(
                 path,
                 state.doc_index,
-                {name: state[name] for name in note_fields},
+                {name: state[key] for name, key in note_keys.items()},
                 id_field=id_field,
                 expected_id=doc_id,
             )

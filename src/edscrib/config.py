@@ -5,10 +5,11 @@ package derives everything the app body needs from that description. Nothing in 
 module names a domain concept: every column name arrives from the consumer.
 
 Construction is where this package raises, against every other module, which logs the
-detail and stops the app on one message. Six refusals live here: a group that is not a
-sequence of radio/text rows, a field whose options do not match its kind, an estimate
-that does not name a radio of a persisted group, and a configuration, a tutorial pair
-or a stylesheet pair built positionally. They raise because each one makes
+detail and stops the app on one message. Seven refusals live here: a group that is not a
+sequence of radio/text rows, a group whose fields are editable against what it writes,
+a field whose options do not match its kind, an estimate that does not name a radio of a
+persisted group, and a configuration, a tutorial pair or a stylesheet pair built
+positionally. They raise because each one makes
 a derivation unsound rather than a run wrong, `rows` resting on the pairing and the
 export on the column names being the ones meant, so an object violating them must not
 exist rather than exist and be caught a rerun later.
@@ -48,6 +49,11 @@ class NoteField:
     `None`, rather than raising: that is a third value beside the empty sentinel and a
     real answer, and it is what a save would put in the column. Options on a text are
     copy nothing reads.
+
+    `editable` says whether the annotator answers this field or reads it, and its group
+    says whether the answer is written: the two are one decision and the group refuses
+    them apart. It defaults to the value a group defaults to, so a field declared
+    without it belongs to a group that writes.
     """
 
     name: str
@@ -72,6 +78,14 @@ class FieldGroup:
     pairing is positional, so the guard below turns that tacit invariant into a named
     failure rather than a silently wrong layout.
 
+    What a group writes is also what it lets an annotator answer, and the two
+    declarations are refused where they disagree. A live widget in a group that is
+    never written takes an answer, shows it, and hands back the previous one as soon as
+    the cursor moves, with nothing written, nothing rendered and nothing logged; that
+    is what a reference group would be at the default. The other way round writes back
+    what it read, which no browser can make wrong, and states an intention the save
+    does not honour all the same.
+
     An empty one is refused by the same guard rather than by it: on no field at all the
     pairing holds vacuously, both slices being empty, and the group then contributes
     nothing to any derivation, so a section emptied by a typo renders as a section
@@ -84,6 +98,12 @@ class FieldGroup:
     def __post_init__(self) -> None:
         if not self.fields:
             raise ValueError("a group is a sequence of radio/text rows, got none")
+
+        if any(note.editable is not self.persisted for note in self.fields):
+            raise ValueError(
+                "a field is editable where its group is written, and one declares "
+                "the opposite"
+            )
 
         kinds = [field.kind for field in self.fields]
         rows = len(kinds) // 2
@@ -140,7 +160,10 @@ class Styles:
     render calls, `navigation` and `download`: `button-backward`, `button-save`,
     `button-forward` and `button-export`. A direct caller of those two names its own, a
     `run_app` consumer cannot, so all ten are the seam `app` styles against and part of
-    what this package promises rather than an implementation detail.
+    what this package promises rather than an implementation detail. Two are emitted
+    only where what they name is offered, `button-tuto` and `button-export`; the
+    download's own container is named on every page, under whichever of its two names
+    the configuration declares.
 
     Nothing else is. Every `key` becomes such a class, and the render's own widget keys
     fold in the cursor or the number of saves, so they name a position in a run rather
@@ -186,6 +209,14 @@ class AnnotConfig:
     `export_excluded` holds the answers that keep a document out of the export. The
     unanswered sentinel is not among them and never needs to be: the package excludes it
     on its own, an export being a gold standard and an empty answer being no answer.
+
+    `download_visible` decides whether the export is offered at all, and not only how
+    its container is named. Both names are written either way, a stylesheet hooking on
+    them, and the widget behind exists only where the flag says so: that sheet lives in
+    the deployment rather than here, so a rule dropped from it, a file not yet in place
+    or a class prefix a version bump moves would otherwise put the export back on a page
+    that declared it away, with nothing here to notice. What it withholds is the entry
+    point and never the bytes, which the dialog's own credential check holds.
     """
 
     work_dir: str | Path

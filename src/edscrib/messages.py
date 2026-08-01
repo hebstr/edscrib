@@ -71,6 +71,12 @@ MESSAGE_CURSOR = (
     "dans le journal du serveur."
 )
 
+MESSAGE_POSITION = (
+    "Le parcours a changé depuis l'ouverture de cette page : la position affichée ne "
+    "désigne plus de document. Rechargez la page pour repartir du dernier document "
+    "annoté. Le détail est dans le journal du serveur."
+)
+
 MESSAGE_SAVE = (
     "L'annotation n'a pas été enregistrée, et le document sur lequel elle portait est "
     "inchangé. Rechargez la page avant de poursuivre. Le détail est dans le journal du "

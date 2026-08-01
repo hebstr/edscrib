@@ -17,7 +17,7 @@ from edscrib.navigation import (
 
 ESTIMATE = "note_estimate_a"
 COMMENT = "note_comment_a"
-FIELDS = (ESTIMATE, COMMENT)
+FIELDS = {ESTIMATE: ESTIMATE, COMMENT: COMMENT}
 ROWS = 3
 
 
@@ -279,8 +279,8 @@ def _render(
     for name, value in cursor.items():
         state.setdefault(name, value)
 
-    for name in note_fields:
-        state.setdefault(name, values[name])
+    for name, key in note_fields.items():
+        state.setdefault(key, values[name])
 
     navigation(
         path,
@@ -340,6 +340,26 @@ def test_navigation_save_writes_the_session_values_and_moves_on(output):
 
     assert app.session_state.doc_index == 1
     assert app.session_state.save_count == 1
+
+    data = pd.read_parquet(output)
+
+    assert data[ESTIMATE].tolist() == ["oui", "", ""]
+    assert data[COMMENT].tolist() == ["c", "", ""]
+
+
+def test_navigation_saves_the_session_entry_and_not_the_column_it_writes(output):
+    """The column an answer lands in and the entry it is read from are two names.
+
+    A render keying its widgets on the cursor holds each answer under a key of its own,
+    which is the entry Streamlit refreshes from the browser before it calls this
+    callback; the column is only where the answer is written.
+    """
+    app = run_navigation(
+        output,
+        note_fields={ESTIMATE: "widget_estimate", COMMENT: "widget_comment"},
+    )
+
+    app.button(key="button-save").click().run()
 
     data = pd.read_parquet(output)
 

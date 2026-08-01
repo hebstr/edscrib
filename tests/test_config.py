@@ -298,6 +298,29 @@ def test_an_empty_group_is_rejected():
 
 
 @pytest.mark.parametrize(
+    ("persisted", "editable"),
+    [(False, True), (True, False)],
+    ids=["editable-and-never-written", "written-and-read-only"],
+)
+def test_a_group_editable_against_what_it_writes_is_rejected(persisted, editable):
+    """A field an annotator can answer is a field whose answer is written.
+
+    The two are one declaration and were two, so a group could offer a live widget it
+    never saves: the annotator answers, the page shows the answer, and moving to the
+    next document and back shows the previous one, with nothing written, nothing
+    rendered and nothing logged. That is the defect this module's descent closed by
+    hand on each field of the reference group, and the default reopened it for the next
+    consumer to declare one.
+
+    The other way round writes back what it read, which no browser can make wrong, and
+    it is refused with it: a field declared read-only inside a group that writes states
+    an intention the save does not honour.
+    """
+    with pytest.raises(ValueError, match="editable"):
+        FieldGroup(fields=pair("a", "", editable=editable), persisted=persisted)
+
+
+@pytest.mark.parametrize(
     ("label", "kinds"),
     [
         ("odd count", ("radio", "text", "radio")),

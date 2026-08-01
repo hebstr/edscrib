@@ -273,8 +273,8 @@ def test_unresolved_fields_reaches_a_label_and_a_group_that_is_never_written(tmp
         groups=(
             FieldGroup(
                 fields=(
-                    NoteField(f"note_estimate_{USER}", "AVC", "radio", VALUES),
-                    NoteField("note_comment_b", f"COMMENTAIRE {USER}", "text"),
+                    NoteField(f"note_estimate_{USER}", "AVC", "radio", VALUES, False),
+                    NoteField("note_comment_b", f"COMMENTAIRE {USER}", "text", (), False),
                 ),
                 persisted=False,
             ),
@@ -394,7 +394,10 @@ def test_load_frames_stops_on_two_fields_the_binding_put_on_one_column(project, 
         config,
         groups=(
             FieldGroup(
-                fields=(reference, NoteField(COMMENT, "COMMENTAIRE_A", "text")),
+                fields=(
+                    reference,
+                    NoteField(COMMENT, "COMMENTAIRE_A", "text", (), False),
+                ),
                 persisted=False,
             ),
             *config.groups,
@@ -495,8 +498,8 @@ def test_load_frames_accepts_a_reference_field_reading_a_column_of_the_input(pro
         groups=(
             FieldGroup(
                 fields=(
-                    NoteField("note_estimate_b", "AVC_B", "radio", VALUES),
-                    NoteField("note_comment_b", "COMMENTAIRE_B", "text"),
+                    NoteField("note_estimate_b", "AVC_B", "radio", VALUES, False),
+                    NoteField("note_comment_b", "COMMENTAIRE_B", "text", (), False),
                 ),
                 persisted=False,
             ),
@@ -770,7 +773,12 @@ def test_load_frames_refuses_a_reference_the_output_alone_carries(project, caplo
     reconciler = replace(
         first,
         groups=(
-            FieldGroup(fields=first.groups[0].fields, persisted=False),
+            FieldGroup(
+                fields=tuple(
+                    replace(note, editable=False) for note in first.groups[0].fields
+                ),
+                persisted=False,
+            ),
             FieldGroup(
                 fields=(
                     NoteField("note_estimate_m", "AVC", "radio", VALUES),

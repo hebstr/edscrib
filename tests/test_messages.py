@@ -62,7 +62,7 @@ def test_the_copy_is_the_language_of_the_deployment():
         if name.startswith("MESSAGE_")
     }
 
-    assert len(messages) == 10
+    assert len(messages) == 11
 
     for name, text in messages.items():
         assert not english.search(text.lower()), f"{name} reads as English"

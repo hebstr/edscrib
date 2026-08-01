@@ -9,6 +9,7 @@ a configuration literal and one call to `run_app`.
 
 import dataclasses
 import logging
+from base64 import b64encode
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
@@ -30,6 +31,7 @@ from edscrib.messages import (
     MESSAGE_DUPLICATES,
     MESSAGE_LABELS,
     MESSAGE_MISMATCH,
+    MESSAGE_POSITION,
     MESSAGE_TYPES,
     MESSAGE_UNAVAILABLE,
     MESSAGE_VALUES,
@@ -37,6 +39,7 @@ from edscrib.messages import (
 from edscrib.navigation import navigation
 
 _COLUMNS_BODY = (3, 1)
+_HEIGHT_DOCUMENT = 600
 _COLUMNS_ROW = (1.1, 2.4)
 _COLUMNS_NAVIGATION = (0.5, 3.5, 0.5)
 
@@ -842,13 +845,29 @@ def tuto_form(tuto: Tuto) -> None:
         st.video(stream)
 
 
+def _field_key(name: str, index: int) -> str:
+    """The session entry one field's widget holds its answer under, at one cursor.
+
+    Derived rather than spelled out, because it is read from two places: the render that
+    draws the widget, and the save that reads the answer back off it a callback later.
+    Two spellings of one convention drift, and the drift is a save reading an entry
+    nothing writes.
+    """
+    return f"key_{name}_{index}"
+
+
 def render_field(note: NoteField, index: int) -> None:
     """Render one annotation widget and keep its answer under the field's own name.
 
     Two names are in play and neither substitutes for the other. The widget's own key
     folds in the cursor, so moving to another document renders another widget rather
-    than carrying this one's answer along; the field name is where the answer is read
-    back from, by the save and by everything that reads the run.
+    than carrying this one's answer along, and it is the name a save reads: Streamlit
+    applies the browser's values to the keyed entries and then calls the click
+    callbacks, both ahead of this body, so at the instant a callback runs that entry
+    holds what the annotator has on screen. The field name holds the same answer for
+    the render that writes it, which is what everything drawn after this reads; a
+    callback reading it would read the render before, and put a correction back into
+    the gold standard as the value it corrects.
 
     An answer the options no longer offer selects nothing rather than raising, which is
     what a document annotated before a level was renamed holds. The annotator then sees
@@ -861,7 +880,7 @@ def render_field(note: NoteField, index: int) -> None:
     what a widget remembers with nothing here to fail.
     """
     state = st.session_state
-    key = f"key_{note.name}_{index}"
+    key = _field_key(note.name, index)
 
     if note.kind == "radio":
         answer = state[note.name]
@@ -972,6 +991,30 @@ def _render_table(config: AnnotConfig, df_output: pd.DataFrame, index: int) -> N
         st.rerun()
 
 
+def _document_source(document: str) -> str:
+    """The document as a source a frame loads, rather than as the frame's own markup.
+
+    A raw string reaches the frame's inline-document attribute, which Streamlit renders
+    under a sandbox granting `allow-same-origin` and `allow-scripts` at once: the two
+    together leave the frame the app's own origin, and the framework's own reference
+    text for that element names a database column as what must never be passed to it.
+    A note is one. Markup the corpus carries would then read the annotator's
+    authenticated page and drive the widgets that write the gold standard, at a layer
+    none of the guards standing in front of that write observes.
+
+    A document loaded from a `data:` URL carries an opaque origin whatever that sandbox
+    allows, the scheme deciding it rather than the attribute, so the note reaches
+    nothing outside its own frame. What that does not close is script running inside
+    the frame at all, the sandbox being the frontend's and fixed.
+
+    Nothing of the note is stripped on the way, where a sanitiser would repair a
+    clinical document silently, on a page whose whole purpose is that a clinician reads
+    what the record holds.
+    """
+    payload = b64encode(document.encode("utf-8")).decode("ascii")
+    return f"data:text/html;charset=utf-8;base64,{payload}"
+
+
 def _render_body(
     config: AnnotConfig,
     df_input: pd.DataFrame,
@@ -990,6 +1033,10 @@ def _render_body(
     prefixed to it. A clinical note is markup a page-level sheet does not reach, and it
     is not the app's own markup either: rendering it into the page would let a note
     style the widgets around it.
+
+    The frame loads it rather than carrying it inline, which is what denies a note the
+    app's own origin. Measuring content needs that origin, so the frame no longer sizes
+    itself and the height below is the package's rather than the framework's fallback.
     """
     st.dataframe(
         data=(
@@ -1008,7 +1055,10 @@ def _render_body(
     col_text, col_table = st.columns(_COLUMNS_BODY)
 
     with col_text:
-        st.iframe(src=text_style + df_input[config.text_field].iloc[index])
+        st.iframe(
+            src=_document_source(text_style + df_input[config.text_field].iloc[index]),
+            height=_HEIGHT_DOCUMENT,
+        )
 
     with col_table:
         _render_table(config, df_output, index)
@@ -1034,12 +1084,39 @@ def _render_sidebar(
 
     The gauge is keyed on the number of saves and the fields on the cursor, which is the
     difference between them: the gauge counts what reached the disk across the whole run
-    and stands still on an arrow, where a field belongs to one document.
+    and stands still on an arrow, where a field belongs to one document. It is a slider
+    for its shape alone and never a control, so it is disabled: a value the browser
+    submits under a key outlives every interaction that does not move that key, and this
+    one moves on a save, so a gauge nudged between two saves would answer the sidebar's
+    one question wrong until a reload.
 
     Every element the containers below hold is written as a bare `st.` call. An
     `st.sidebar.` one lands in the sidebar all the same, and reads as equivalent, but
     it resolves to the sidebar rather than to the enclosing `with`, so the container
     comes out empty and its key names nothing to style.
+
+    The footer paints a value as markup and not as text, that value being a fragment
+    lifted from the document and carrying the classes the text sheet declares for it;
+    escaping it would paint the tags in letters where a clinician reads a highlighted
+    excerpt. So the corpus reaches the page here, where the document itself reaches an
+    opaque origin, and what stands between the two is `st.html`'s own sanitising rather
+    than anything this package does. Measured against the shipped build, that sanitising
+    holds a script and an event handler, a frame, a link and a `javascript:` or `data:`
+    target, and it holds none of: a `style` element, whose CSS it does not read at all,
+    a `style` attribute on any of the hundred and nineteen tags it allows, or an
+    ordinary `http` resource a tag loads, which leaves the annotator's browser as a
+    request whatever the origin. The frame is no better on that last one.
+
+    None of it is observable from here. `AppTest` reads what this hands the frontend,
+    and the sanitising is the browser's, so a version bump moving that profile would
+    pass every test in this repository.
+
+    The sheet is prefixed to each block rather than emitted once above them, so a block
+    carries what paints it instead of resting on a neighbour emitted before it. What
+    that repeats is the sheet's own bytes, 592 of them on the deployment measured, once
+    per declared field: nothing at one field, 1776 more than a single emission at the
+    four the same deployment's page sheet already names classes for, against a page
+    carrying a clinical note and two tables.
     """
     state = st.session_state
     nrow = len(df_output)
@@ -1088,7 +1165,7 @@ def _render_sidebar(
         navigation(
             output_path,
             nrow,
-            config.persisted_fields,
+            {name: _field_key(name, index) for name in config.persisted_fields},
             columns=_COLUMNS_NAVIGATION,
             can_save=state[config.estimate_field] not in (EMPTY, None),
             save_label=LABEL_SAVE,
@@ -1103,20 +1180,22 @@ def _render_sidebar(
             value=int(df_output[config.estimate_field].ne(EMPTY).sum()),
             max_value=nrow,
             key=f"slider_note_{state.save_count}",
+            disabled=True,
             persist_state=None,
         )
 
     visibility = "visible" if config.download_visible else "hidden"
 
     with st.sidebar.container(key=f"button-download-{visibility}"):
-        download(
-            config.secrets,
-            exportable(config, df_output),
-            filename=title,
-            label=LABEL_DOWNLOAD,
-            info=config.export_info,
-            button_type="primary" if complete(config, df_output) else "secondary",
-        )
+        if config.download_visible:
+            download(
+                config.secrets,
+                exportable(config, df_output),
+                filename=title,
+                label=LABEL_DOWNLOAD,
+                info=config.export_info,
+                button_type="primary" if complete(config, df_output) else "secondary",
+            )
 
     st.sidebar.space("stretch")
 
@@ -1139,11 +1218,16 @@ def run_app(config: AnnotConfig) -> None:
 
     The order is not cosmetic. The login gate runs first, since the answers it gives are
     what the column names are bound to, and a run with no gate binds the anonymous name
-    rather than leaving the placeholder for a guard to catch. `st.set_page_config` has
-    to precede every other `st` call, so it follows the gate, which renders a form on
-    the run it withholds the app on and nothing at all on the run it lets through. The
-    data path comes before the session because where the cursor opens is read off the
-    output, and the guards have to have passed before a page is drawn on either frame.
+    rather than leaving the placeholder for a guard to catch. `st.set_page_config`
+    follows it because the title it sets carries the annotator the gate returns, and not
+    because it has to come first: Streamlit takes it at any point of a run and takes it
+    more than once, each call overriding the parameters it names. So the run that
+    withholds the app configures no page at all and the form takes the framework's own
+    defaults, which it is written for, centring itself in a column of its own rather
+    than resting on a layout. A deployment wanting that form under the app's layout
+    splits the call in two rather than moving this one. The data path comes before the
+    session because where the cursor opens is read off the output, and the guards have
+    to have passed before a page is drawn on either frame.
 
     Nothing reaches the browser from here. `client.showErrorDetails` defaults to `full`,
     so an uncaught raise arrives with its traceback and the server's paths, to whoever is
@@ -1152,6 +1236,37 @@ def run_app(config: AnnotConfig) -> None:
     list is handled, and it is safe against the framework's own control flow: `st.rerun`
     and `st.stop` raise from `ScriptControlException`, which descends from
     `BaseException`, as does the stop every guard of the data path leaves through.
+
+    The cursor is checked against the run before the page is drawn from it, which is
+    the one input the render reads that no guard of the data path sees: those read the
+    two files and the configuration, and this one is the session's. It cannot leave the
+    range of the run it was moved in, every mover clamping, and it leaves the range of a
+    later one, the data being regenerated smaller while a tab stays open, which is the
+    operator action several of those guards prescribe on their own message. It stops
+    rather than moving the cursor back in: what a repair would cost is an annotator
+    carried to another patient with nothing said, where the page can say instead that
+    the run changed and that reloading opens it again.
+
+    A position below the run is what makes that check worth its line. `iloc` reads it as
+    a position from the end, and `st.slider` widens its own bounds around a value below
+    its minimum rather than raising, so the last document of the run rendered under the
+    first position and every save was refused, by the label check that reads an index
+    the frame does not carry.
+
+    The title names the page, the exported file and the sheet inside it, and that last
+    one is what bounds it: a sheet name takes at most thirty-one characters, so the two
+    declared stems and their two separators leave the rest to the annotator's account
+    name, nineteen of them on a deployment splitting by month and naming its project in
+    three letters. Past that the export refuses, once the annotator has authenticated
+    for it, and the log names the length while the page names nothing. It is left to
+    refuse rather than truncated, a workbook whose sheet is quietly not the one asked
+    for being what the export's own preconditions exist against, and a deployment whose
+    accounts are longer shortens what it declares here.
+
+    It asks for no menu either, where an empty mapping asked for one and got nothing:
+    the framework builds each of the three entries only from the address or the text a
+    page supplies for it, and this one supplies none, so they are already absent and a
+    mapping naming them would raise a flag against entries that never render.
 
     The configuration object never enters `st.session_state`. Editing any file reimports
     the class module, so an `isinstance` against an instance stored there fails against
@@ -1181,7 +1296,6 @@ def run_app(config: AnnotConfig) -> None:
             page_title=title,
             layout="wide",
             initial_sidebar_state="expanded",
-            menu_items={},
         )
         st.markdown(stylesheet(config.styles.app), unsafe_allow_html=True)
 
@@ -1194,6 +1308,13 @@ def run_app(config: AnnotConfig) -> None:
             state.save_count = 0
 
         index = int(state.doc_index)
+
+        if index not in range(len(df_output)):
+            _logger.error(
+                "The session holds position %d of a run of %d", index, len(df_output)
+            )
+            _halt(MESSAGE_POSITION)
+
         text_style = stylesheet(config.styles.text)
 
         for note in config.rendered:
