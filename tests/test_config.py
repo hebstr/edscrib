@@ -1,10 +1,11 @@
 """The declarative shape two annotation apps reduce to, and what it derives."""
 
 from dataclasses import fields, replace
+from pathlib import Path
 
 import pytest
 
-from edscrib.config import AnnotConfig, FieldGroup, NoteField
+from edscrib.config import AnnotConfig, FieldGroup, NoteField, Tuto
 
 VALUES = ("oui", "peut-être", "non")
 
@@ -184,6 +185,36 @@ def test_the_configuration_refuses_a_positional_construction(review):
 
     with pytest.raises(TypeError, match="positional"):
         AnnotConfig(*declared)  # pyrefly: ignore[missing-argument]
+
+
+def test_the_tutorial_names_its_two_files(review):
+    """The pair is named rather than positional, which is the whole of the type.
+
+    A bare two-tuple says which file comes first and nothing about which is which, so a
+    transposition hands a markdown file to a video player and the bytes of a recording
+    to a markdown renderer, at the click and inside a dialog.
+    """
+    config = replace(review, tuto=Tuto(text=Path("tuto.md"), media=Path("tuto.webm")))
+
+    assert config.tuto is not None
+    assert config.tuto.text.suffix == ".md"
+    assert config.tuto.media.suffix == ".webm"
+
+
+def test_the_tutorial_refuses_a_positional_pair():
+    """Two consecutive fields of one type, the same reason the configuration is kw-only.
+
+    It costs nothing here, where no consumer constructs one yet, and it is what makes the
+    two roles unmistakable at the only place they are written.
+    """
+    files = (Path("tuto.md"), Path("tuto.webm"))
+
+    with pytest.raises(TypeError, match="positional"):
+        Tuto(*files)  # pyrefly: ignore[missing-argument, unexpected-positional-argument]
+
+
+def test_a_configuration_declares_no_tutorial_by_default(review):
+    assert review.tuto is None
 
 
 ### GUARD ----------------------------------------------------------------------

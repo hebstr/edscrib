@@ -5,12 +5,12 @@ package derives everything the app body needs from that description. Nothing in 
 module names a domain concept: every column name arrives from the consumer.
 
 Construction is where this package raises, against every other module, which logs the
-detail and stops the app on one message. Three refusals live here: a group that is not
+detail and stops the app on one message. Four refusals live here: a group that is not
 a sequence of radio/text rows, a field whose options do not match its kind, and a
-configuration built positionally. They raise because each one makes a derivation
-unsound rather than a run wrong, `rows` resting on the pairing and the export on the
-column names being the ones meant, so an object violating them must not exist rather
-than exist and be caught a rerun later.
+configuration or a tutorial pair built positionally. They raise because each one makes
+a derivation unsound rather than a run wrong, `rows` resting on the pairing and the
+export on the column names being the ones meant, so an object violating them must not
+exist rather than exist and be caught a rerun later.
 
 A consumer declares its configuration at module scope, outside every boundary this
 package owns, so an uncaught refusal reaches the framework's own handler, which paints
@@ -84,6 +84,26 @@ class FieldGroup:
 
 
 @dataclass(frozen=True, kw_only=True)
+class Tuto:
+    """The two files a tutorial dialog renders, each named for what it is.
+
+    Keyword-only for the reason `AnnotConfig` is: two consecutive fields of one type,
+    and a transposition hands a markdown file to a video player and the bytes of a
+    recording to a markdown renderer, at the click and inside a dialog where nothing
+    else is looking. A pair of positions says which file comes first and nothing about
+    which is which; this says it at the only place a consumer writes it.
+
+    Neither file is opened here, and their existence is not asked. A configuration is
+    declared at module scope, so a check here would raise at import on a deployment
+    whose asset is not in place yet, and it would answer for the instant before the
+    click rather than the click: what the render disables the button on is what decides.
+    """
+
+    text: Path
+    media: Path
+
+
+@dataclass(frozen=True, kw_only=True)
 class AnnotConfig:
     """Everything one annotation app declares, and what the package derives from it.
 
@@ -109,7 +129,7 @@ class AnnotConfig:
     text_field: str
     meta_fields: Mapping[str, str]
     auth: bool = False
-    tuto: tuple[Path, Path] | None = None
+    tuto: Tuto | None = None
     data_suffix: str = ""
 
     def resolve(self, user: str) -> "AnnotConfig":
