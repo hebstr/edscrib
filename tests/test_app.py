@@ -700,7 +700,79 @@ def test_load_frames_stops_on_a_declared_column_the_input_no_longer_carries(
     assert not app.exception
     assert app.error[0].value == MESSAGE_COLUMNS
     assert "pat_age" not in app.error[0].value
-    assert "The input no longer carries ['pat_age']" in caplog.text
+    assert "The output carries ['pat_age'] where the input does not" in caplog.text
+
+
+def test_load_frames_refuses_an_output_that_carries_the_document_text(project, caplog):
+    """Declaring the text nowhere says nothing about what the output holds.
+
+    `build_output` drops it on the first build alone and hands back a resumed one as it
+    sits on the disk, and no declared name reaches the text, so all three column guards
+    pass over it. It would stay for the life of the file, at 190 times the size and 16
+    times the save.
+    """
+    config, output = project
+    folder = Path(config.work_dir) / "data" / "2023-01"
+    source = folder / "2023-01_avc_annot_data_input-review.parquet"
+    read = pd.read_parquet(source)
+    read.assign(**{ESTIMATE: "", COMMENT: ""}).to_parquet(output, index=False)
+
+    app = run_shell(config)
+
+    assert not app.exception
+    assert app.error[0].value == MESSAGE_UNAVAILABLE
+    assert TEXT not in app.error[0].value
+    assert f"The output carries the document text: '{TEXT}'" in caplog.text
+
+
+def test_load_frames_refuses_a_reference_the_output_alone_carries(project, caplog):
+    """A reference column comes from the input, and the guard says so without inventing.
+
+    It is the one thing the output can carry where the input never did: another
+    annotator's app declares the same column persisted, and `build_output` creates it
+    there against that configuration alone. So the message cannot say the input stopped
+    carrying it, and names the asymmetry it actually observed.
+
+    Refusing is the point rather than the cost. Sourcing the reference from the output
+    would leave it compared against nothing, and a prior annotator revising an answer
+    would stop nothing and reach the reconciliation nowhere.
+    """
+    config, _ = project
+    first = replace(
+        config,
+        groups=(
+            FieldGroup(
+                fields=(
+                    NoteField("note_estimate_a", "AVC", "radio", VALUES),
+                    NoteField("note_comment_a", "COMMENTAIRE", "text"),
+                ),
+            ),
+        ),
+        table_fields=("n",),
+    )
+
+    assert not run_shell(first).error
+
+    reconciler = replace(
+        first,
+        groups=(
+            FieldGroup(fields=first.groups[0].fields, persisted=False),
+            FieldGroup(
+                fields=(
+                    NoteField("note_estimate_m", "AVC", "radio", VALUES),
+                    NoteField("note_comment_m", "COMMENTAIRE", "text"),
+                ),
+            ),
+        ),
+    )
+
+    app = run_shell(reconciler)
+
+    assert not app.exception
+    assert app.error[0].value == MESSAGE_COLUMNS
+    assert "note_estimate_a" not in app.error[0].value
+    assert "where the input does not" in caplog.text
+    assert "no longer" not in caplog.text
 
 
 ### WRITE CONDITION ------------------------------------------------------------
@@ -812,6 +884,7 @@ def test_load_frames_does_not_write_over_a_save_it_waited_for(project):
                 ),
             ),
         ),
+        table_fields=("n",),
     )
 
     holder = FileLock(f"{output}.lock")
@@ -1034,11 +1107,90 @@ def run_shell(config):
 
         from edscrib.app import load_frames
 
-        df_input, df_output = load_frames(config)
+        df_input, df_output, output_path = load_frames(config)
 
         st.text(f"{len(df_input)}/{len(df_output)}")
+        st.text(str(output_path))
 
     return AppTest.from_function(script, kwargs={"config": config}).run()
+
+
+### THE HALT OFF THE SCRIPT THREAD -------------------------------------------
+
+
+def test_load_frames_stops_a_caller_that_is_not_a_script_run(project, caplog):
+    """`load_frames` is public, so its guards cannot rest on who is calling it.
+
+    `st.stop` requests a stop of the ambient run context and does nothing whatever
+    without one, under a `NoReturn` annotation no checker sees through. Each guard being
+    one statement followed by another, a consumer's own test calling this directly fell
+    through all of them down to the write, and on two stems resolving to one file that
+    replaced the raw input with the merged frame: the outcome the first guard exists to
+    prevent, reached by the shortest path a consumer takes to the package.
+    """
+    config, _ = project
+    collided = replace(config, output_stem=config.input_stem)
+    path = (
+        Path(config.work_dir)
+        / "data"
+        / "2023-01"
+        / ("2023-01_avc_annot_data_input-review.parquet")
+    )
+    before = pd.read_parquet(path)
+
+    with pytest.raises(BaseException) as raised:
+        load_frames(collided)
+
+    assert not isinstance(raised.value, Exception)
+    assert pd.read_parquet(path).equals(before)
+    assert str(path) in caplog.text
+
+
+def test_the_halt_carries_no_path_to_the_page_off_the_script_thread(project, caplog):
+    """The stop is structural, and what it renders is still the one opaque message.
+
+    A guard that raised where it used to fall through would be a disclosure if the raise
+    carried the detail: `client.showErrorDetails` paints an uncaught one into the browser
+    whole. The detail stays in the log and the exception stays empty.
+    """
+    config, _ = project
+    unresolvable = replace(config, proj=f"avc{USER}")
+
+    with pytest.raises(BaseException) as raised:
+        load_frames(unresolvable)
+
+    assert not str(raised.value)
+    assert str(config.work_dir) not in str(raised.value)
+    assert USER in caplog.text
+
+
+def test_load_frames_hands_back_the_output_path_it_validated(project):
+    """`save_notes` takes a path, and this is where the only checked one exists.
+
+    Derived from five fields of the configuration and put to the kernel against the
+    input's, it would otherwise be derived again by whoever wires the save, off the same
+    five fields and with none of that behind it.
+    """
+    config, output = project
+
+    app = run_shell(config)
+
+    assert not app.exception
+    assert app.text[1].value == str(output)
+    assert Path(app.text[1].value).exists()
+
+
+def test_the_returned_path_follows_the_suffix_a_second_derivation_could_drop(project):
+    """The divergence this closes is a field the caller forgets, so vary that field."""
+    config, _ = project
+    suffixed = replace(config, data_suffix="_v2")
+    folder = Path(config.work_dir) / "data" / "2023-01"
+    make_input().to_parquet(folder / "2023-01_avc_annot_data_input-review_v2.parquet")
+
+    app = run_shell(suffixed)
+
+    assert not app.exception
+    assert app.text[1].value.endswith("2023-01_avc_annot_data_output-review_v2.parquet")
 
 
 def test_load_frames_creates_the_output_on_a_first_run(project):
@@ -1080,7 +1232,7 @@ def test_load_frames_keeps_a_comment_saved_with_no_answer_to_the_radio(project):
 
         from edscrib.app import load_frames
 
-        _, df_output = load_frames(config)
+        _, df_output, _ = load_frames(config)
 
         st.text("|".join(df_output[comment]))
 

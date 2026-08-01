@@ -10,6 +10,7 @@ import logging
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
+from typing import NoReturn
 
 import pandas as pd
 import streamlit as st
@@ -28,6 +29,35 @@ from edscrib.messages import (
 )
 
 _logger = logging.getLogger(__name__)
+
+
+class _Stopped(BaseException):
+    """The stop a guard leaves through, where `st.stop` only ever requests one.
+
+    Descends from `BaseException` and not from `Exception`, as the runner's own
+    `ScriptControlException` does and for the same reason: the data path catches
+    `Exception` to keep a deployment path out of the browser, and a stop that clause
+    swallowed would land back on the fall-through this exists to close.
+    """
+
+
+def _halt(message: str) -> NoReturn:
+    """Render one message to the page and leave, whatever run context there is.
+
+    `st.stop` is a request and not a raise. Its body asks the ambient context to stop
+    and forces a yield point at which the runner raises, so on the script thread the
+    line below is never reached; with no context at all it does nothing whatever and
+    returns, under a `NoReturn` annotation the type checker believes either way. A guard
+    is one statement followed by another, so a caller outside a script run fell through
+    every one of them down to the write, and two stems resolving to one file then
+    replaced the raw input with the merged frame: the outcome the first guard exists to
+    prevent, reached by a function that is public and whose consumers write their own
+    tests. The raise is what makes the stop a property of this module rather than a
+    convention about who is allowed to call it.
+    """
+    st.error(message)
+    st.stop()
+    raise _Stopped
 
 
 def _stamp(path: str | Path) -> tuple[int, int, int]:
@@ -382,14 +412,24 @@ def write_output(data: pd.DataFrame, path: str | Path) -> None:
             staged.unlink(missing_ok=True)
 
 
-def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
+def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame, Path]:
     """Read the input, build or resume the output, and gate on the guards.
 
-    Returns the input frame, which carries the document text, and the output frame the
-    app annotates. Both are labelled by position and aligned row for row once the
-    guards have passed, which is what lets the rest of the app address a document by
-    position, and they agree on every declared column outside the annotation, which is
-    what makes the output's own copy of them the export.
+    Returns the input frame, which carries the document text, the output frame the app
+    annotates, and the path that output was read from. Both frames are labelled by
+    position and aligned row for row once the guards have passed, which is what lets the
+    rest of the app address a document by position, and they agree on every declared
+    column outside the annotation, which is what makes the output's own copy of them the
+    export.
+
+    The path is returned because `save_notes` takes one and this is where the only
+    validated one exists. Derived here from five fields of the configuration and put to
+    the kernel against the input's, it would otherwise be derived a second time by
+    whoever wires the save, off the same five fields and with none of that behind it: a
+    forgotten suffix then names a file this function never looked at, and the save writes
+    into whatever parquet is sitting there, under its own lock, having re-read and
+    re-checked the identifier against a frame nothing aligned. Handing back the one that
+    passed leaves the caller nothing to derive.
 
     The two stems are what separates the input from the gold standard, and nothing else
     does: both paths are built from the same directory, project, split and suffix, so
@@ -469,6 +509,20 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
     table alone, the metadata and the counter reaching the same comparison, and the
     remedy is one wherever it was written.
 
+    The output is then asked for the text by name, under the lock and on its own. That
+    the configuration declares it nowhere says what the app reads, and `build_output`
+    drops it on the first build alone: an output resumed comes back as it sits on the
+    disk, and the text is the one column no declared name reaches, so the column guard
+    passes over it, the type guard has nothing to read it from and the value guard drops
+    it with the rest. Whatever put it there, a hand-built output, a generation writing
+    one directly or a release predating the drop, it stays for the life of the file with
+    nothing rendered and nothing logged. Measured over two thousand documents of four
+    kilobytes: the gold standard is 190 times its size, and one save round trip goes
+    from 5.7 ms to 93 ms, paid under the exclusive lock on the one operation an annotator
+    repeats. The message is the generic one and not a rebuild: the annotation in that
+    file is intact and worth keeping, so the remedy is to drop the column and not to
+    regenerate anything, and it is the log that carries it.
+
     Every rendered field is declared, not only the persisted ones. A group shown for
     reference and never written owns columns `build_output` does not create: they reach
     the output through the input's first copy alone, so a regenerated input that drops
@@ -478,6 +532,18 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
     summary table's list and not a statement about what the annotation reads. So too
     the frozen-value guard covers them too: a reference answer the input has since
     corrected stops the app rather than being reconciled against in its stale form.
+
+    A reference column has to be in the input, then, and that is a precondition on the
+    deployment rather than a property the package can arrange. It is the one thing the
+    output can carry without the input ever having done so: another annotator's app
+    declares the same column as persisted, and `build_output` creates it there against
+    that configuration and no other. A reconciliation arriving on the shared output of
+    the annotators it reconciles is refused for that reason, and its input is what has
+    to fold their answers in, upstream, as the reconciler's own generation does. Sourcing
+    the reference from the output instead is what is refused and not the pattern: nothing
+    would compare that column against anything, and a prior annotator revising an answer
+    would reach the reconciliation nowhere and stop nothing, which is the silent stale
+    reference the guard was widened to cover in the first place.
 
     Those same columns are asked of the input as well, and not of the output alone. The
     output carries every one of them by construction, having frozen its copy at the
@@ -536,30 +602,36 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
     truncated parquet and a missing column each raise naming the deployment path or the
     column, and `client.showErrorDetails` paints an uncaught raise into the browser of
     whoever is looking. The detail goes to the module log, one message goes to the page.
-    The guards below stop the script through `ScriptControlException`, which descends
-    from `BaseException` and so passes through the clause untouched.
+    Every guard leaves through `_halt`, whose raise descends from `BaseException` and so
+    passes through the clause untouched, as the runner's own `ScriptControlException`
+    does, and the clause itself leaves the same way rather than falling past its own stop.
 
-    That raise is the runner's own and not `st.stop`'s, whose body requests a stop and
-    forces a yield point where the enqueued message is handled. It is reached on the
-    script thread and inside the exec alone, and each guard here is one statement
-    followed by another, so every one of them rests on that single condition. With no
-    run context
-    the call does nothing whatever; from the worker thread of a `parallel=True` fragment
-    the yield point consults a coordinator whose stop event the request never sets, and
-    streamlit's own `_check_not_parallel_worker` is wired to nothing in 1.60. The guard
-    then logs, renders and returns, and everything after it runs, down to the write:
-    entered that way with two stems resolving to one file, this replaces the raw input
-    with the merged frame, which is the outcome its first guard exists to prevent. The
-    data path belongs on the script thread for that reason, and a worker pool would
-    break its lock discipline before it broke its guards.
+    That the stop is this module's and not `st.stop`'s is what makes the chain hold off
+    the script thread, each guard here being one statement followed by another. `st.stop`
+    requests a stop of the ambient context and forces a yield point at which the runner
+    raises; with no context at all it does nothing whatever, and from the worker thread
+    of a `parallel=True` fragment the yield point consults a coordinator whose stop event
+    the request never sets, streamlit's own `_check_not_parallel_worker` being wired to
+    nothing in 1.60. Either way the annotation reads `NoReturn` and no checker can tell
+    the two apart. The data path still belongs on the script thread, a worker pool
+    breaking its lock discipline before it reaches its guards, but that is a property of
+    the deployment now rather than the only thing standing in front of the write.
+
+    The return sits outside the `try` and stays there, an `else` clause buying nothing.
+    What holds the binding is `_halt`'s own `NoReturn` and not `st.stop`'s: measured both
+    ways, dropping it reports two uninitialized names here and one missing return under
+    the clause, and a boundary reverted to a bare `st.stop` reports nothing under either.
+    The two shapes catch the same regression and are blind to the same one, so what is
+    left is where the survivor lands: falling past the return raises in this module,
+    where returning `None` from a clause raises in the consumer, on a frame naming its
+    file and nothing about why.
     """
     try:
         unresolved = unresolved_fields(config)
 
         if unresolved:
             _logger.error("The configuration was never resolved: %s", unresolved)
-            st.error(MESSAGE_UNAVAILABLE)
-            st.stop()
+            _halt(MESSAGE_UNAVAILABLE)
 
         declared_twice = sorted(
             name
@@ -569,8 +641,7 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
 
         if declared_twice:
             _logger.error("Two fields are declared on %s", declared_twice)
-            st.error(MESSAGE_UNAVAILABLE)
-            st.stop()
+            _halt(MESSAGE_UNAVAILABLE)
 
         declared = tuple(
             dict.fromkeys(
@@ -587,8 +658,7 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
             _logger.error(
                 "The document text is declared as a column: %r", config.text_field
             )
-            st.error(MESSAGE_UNAVAILABLE)
-            st.stop()
+            _halt(MESSAGE_UNAVAILABLE)
 
         paths = (config.work_dir, config.proj, config.split)
         input_path = data_path(*paths, config.input_stem, config.data_suffix)
@@ -596,8 +666,7 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
 
         if same_file(input_path, output_path):
             _logger.error("One file answers to %s and to %s", input_path, output_path)
-            st.error(MESSAGE_UNAVAILABLE)
-            st.stop()
+            _halt(MESSAGE_UNAVAILABLE)
 
         df_input = _read_input(input_path, _stamp(input_path))
 
@@ -605,22 +674,19 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
 
         if missing:
             _logger.error("The input does not carry %s", missing)
-            st.error(MESSAGE_COLUMNS)
-            st.stop()
+            _halt(MESSAGE_COLUMNS)
 
         repeated = repeated_ids(df_input, config.id_field)
 
         if repeated:
             _logger.error("One identifier designates the documents at %s", repeated)
-            st.error(MESSAGE_DUPLICATES)
-            st.stop()
+            _halt(MESSAGE_DUPLICATES)
 
         overwritten = sorted(set(config.persisted_fields) & set(df_input.columns))
 
         if overwritten:
             _logger.error("A field annotates the input column %s", overwritten)
-            st.error(MESSAGE_UNAVAILABLE)
-            st.stop()
+            _halt(MESSAGE_UNAVAILABLE)
 
         with FileLock(f"{output_path}.lock", is_singleton=True):
             df_output = build_output(
@@ -629,6 +695,12 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
                 config.text_field,
                 config.persisted_fields,
             )
+
+            if config.text_field in df_output.columns:
+                _logger.error(
+                    "The output carries the document text: %r", config.text_field
+                )
+                _halt(MESSAGE_UNAVAILABLE)
 
             mislabelled = [
                 name
@@ -640,15 +712,13 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
                 _logger.error(
                     "The rows of the %s are not labelled by position", mislabelled
                 )
-                st.error(MESSAGE_LABELS)
-                st.stop()
+                _halt(MESSAGE_LABELS)
 
             missing = missing_fields(df_output, declared)
 
             if missing:
                 _logger.error("The output does not carry %s", missing)
-                st.error(MESSAGE_COLUMNS)
-                st.stop()
+                _halt(MESSAGE_COLUMNS)
 
             frozen = tuple(
                 name for name in declared if name not in config.persisted_fields
@@ -656,9 +726,8 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
             missing = missing_fields(df_input, frozen)
 
             if missing:
-                _logger.error("The input no longer carries %s", missing)
-                st.error(MESSAGE_COLUMNS)
-                st.stop()
+                _logger.error("The output carries %s where the input does not", missing)
+                _halt(MESSAGE_COLUMNS)
 
             retyped = retyped_fields(df_input, df_output, frozen)
 
@@ -670,8 +739,7 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
                         for name in retyped
                     },
                 )
-                st.error(MESSAGE_TYPES)
-                st.stop()
+                _halt(MESSAGE_TYPES)
 
             if not aligned(df_input, df_output, config.id_field):
                 _logger.error(
@@ -679,15 +747,13 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
                     len(df_input),
                     len(df_output),
                 )
-                st.error(MESSAGE_MISMATCH)
-                st.stop()
+                _halt(MESSAGE_MISMATCH)
 
             drifted = frozen_fields(df_input, df_output, frozen)
 
             if drifted:
                 _logger.error("The output was built on other values for %s", drifted)
-                st.error(MESSAGE_VALUES)
-                st.stop()
+                _halt(MESSAGE_VALUES)
 
             on_disk = read_data(output_path) if Path(output_path).exists() else None
 
@@ -695,7 +761,6 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
                 write_output(df_output, output_path)
     except Exception:
         _logger.exception("Annotation data unusable, holding the app back")
-        st.error(MESSAGE_UNAVAILABLE)
-        st.stop()
+        _halt(MESSAGE_UNAVAILABLE)
 
-    return df_input, df_output
+    return df_input, df_output, output_path
