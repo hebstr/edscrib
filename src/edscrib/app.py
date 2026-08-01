@@ -159,12 +159,92 @@ def unresolved_fields(config: AnnotConfig) -> list[str]:
     return sorted({value for value in _strings(config) if USER in value})
 
 
+def _reads_as_integer(column: pd.Series) -> bool:
+    """Whether the column is an integer, of any width and either nullability."""
+    return pd.api.types.is_integer_dtype(column.dtype)
+
+
+def _reads_as_text(column: pd.Series) -> bool:
+    """Whether the column is text, which an object dtype answers on its contents.
+
+    `is_string_dtype` holds for an object column whatever sits in it, so the dtype alone
+    would enrol a column of mixed values into the family and then compare it against
+    text through a conversion that stringifies whatever it found. The inference is what
+    settles that one. An empty column joins: nothing it holds is not a string.
+    """
+    if column.dtype == object:
+        return pd.api.types.infer_dtype(column, skipna=True) in {"string", "empty"}
+
+    return pd.api.types.is_string_dtype(column.dtype)
+
+
+def _comparable(left: pd.Series, right: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """The pair read as one type where a lossless one holds both, untouched otherwise.
+
+    Two families and no more. An integer widens into the nullable one exactly, whatever
+    its width, and every spelling of text converts into `string` unchanged: a library
+    moving under a parquet written a release earlier is what lands a column on the other
+    spelling of one of those, and that is the whole of what this reconciles.
+
+    The rest is handed back as it came, for the caller to report. A float compared across
+    widths reads equal on values that are not, a category carries an order beside its
+    values, and a datetime carries a zone. Deciding what those lose is an arbitration
+    rather than a mechanism, and one made wrong accepts a value that genuinely differs
+    without raising anything.
+
+    Two equal dtypes come back untouched as well, which is the ordinary run: nothing is
+    converted while the library underneath stays where it was, and what the guards pay
+    is one dtype comparison per declared column.
+
+    A conversion that raises hands the pair back untouched too, so the caller reports the
+    column and the app stops. `astype` refuses an unsigned integer past the signed range
+    rather than wrapping it, and a type that cannot hold what the other side carries is
+    not that side's type spelled differently.
+
+    Nothing converted is ever written. The pair exists for the length of a comparison,
+    and the frame that reaches the annotator and the export is the one read from disk.
+    """
+    if left.dtype == right.dtype:
+        return left, right
+
+    try:
+        if _reads_as_integer(left) and _reads_as_integer(right):
+            return left.astype("Int64"), right.astype("Int64")
+
+        if _reads_as_text(left) and _reads_as_text(right):
+            return left.astype("string"), right.astype("string")
+    except (OverflowError, TypeError, ValueError):
+        return left, right
+
+    return left, right
+
+
+def _retyped(left: pd.Series, right: pd.Series) -> bool:
+    """Whether no lossless type holds the two columns as they are spelled."""
+    left, right = _comparable(left, right)
+    return left.dtype != right.dtype
+
+
+def _same_values(left: pd.Series, right: pd.Series) -> bool:
+    """Whether the two columns hold the same values, under one spelling of their type.
+
+    `Series.equals` answers on the dtype beside the values and the index, which is what
+    made a spelling that moved read as a value that changed. Reconciling ahead of it
+    leaves the other two answers untouched: an index that drifted is still a false, and
+    so is a value the wider type merely allowed, a missing one against a number.
+    """
+    left, right = _comparable(left, right)
+    return left.equals(right)
+
+
 def aligned(df_input: pd.DataFrame, df_output: pd.DataFrame, id_field: str) -> bool:
     """Whether the two frames designate the same documents, row for row.
 
     `Series.equals` compares the index alongside the values, so this also rejects the
     two frames drifting apart into non-contiguous labels together, which is what would
-    put the cursor on a row label that no longer exists.
+    put the cursor on a row label that no longer exists. It compares the dtype as well,
+    which a cohort is not, so the pair is reconciled first and `_same_values` carries
+    what that covers.
 
     Both frames are expected to carry the identifier, which is what the two column
     guards establish ahead of every call. A frame without it does not answer the
@@ -172,7 +252,7 @@ def aligned(df_input: pd.DataFrame, df_output: pd.DataFrame, id_field: str) -> b
     a `False` that would read as a mismatch and send the operator to rebuild an input
     that carries nothing wrong.
     """
-    return df_input[id_field].equals(df_output[id_field])
+    return _same_values(df_input[id_field], df_output[id_field])
 
 
 def labelled_by_position(data: pd.DataFrame) -> bool:
@@ -220,7 +300,7 @@ def retyped_fields(
     df_output: pd.DataFrame,
     fields: tuple[str, ...],
 ) -> list[str]:
-    """The declared columns the two frames no longer read as the same type.
+    """The declared columns no lossless type holds under both frames' spellings.
 
     `Series.equals` answers on the values and on the dtype at once, so a column whose
     type moved between the first build and now is reported by the value comparison as a
@@ -233,12 +313,21 @@ def retyped_fields(
     read back a release later, and a round trip through parquet is where a pandas
     default or an arrow-backed read lands a column on another type for the same values.
 
-    Asked before the two comparisons rather than beside them, since it is what makes
-    either of them mean anything: they answer on values, and two types are not a value
-    that changed. Nothing is loosened by it. An identifier that moved from an integer to
-    a float still stops the app, which is the collapse past the mantissa that `save_notes`
-    reads through the package's own reader to avoid; what changes is that the operator
-    is told the type moved instead of being sent to rebuild against it.
+    So a pair one type holds without loss is reconciled rather than reported, and the
+    two comparisons downstream read that same reconciled pair. Reporting nothing here
+    while they went on answering through `Series.equals` would move the stop from one
+    message to another and buy the deployment nothing. `_shared_type` carries which two
+    families qualify and why the rest are left alone.
+
+    Asked before the two comparisons rather than beside them, since a pair it refuses is
+    one they would answer wrong: they read values, and two types holding different
+    things are not a value that changed.
+
+    What stays reported still stops the app. An identifier that moved from an integer to
+    a float is refused, which is the collapse past the mantissa that `save_notes` reads
+    through the package's own reader to avoid. What changed is that a spelling moving
+    under a stored parquet no longer stops anything, and that the operator meeting a
+    real one is told the type moved instead of being sent to rebuild against it.
 
     Naming the column is not enough for that, and the caller logs the two types beside
     it. The remedy is not at the data layer at all: the type a column reads as comes
@@ -247,9 +336,7 @@ def retyped_fields(
     says only which column disagreed. A type names no patient, so it is a detail the log
     can carry whole.
     """
-    return sorted(
-        name for name in fields if df_input[name].dtype != df_output[name].dtype
-    )
+    return sorted(name for name in fields if _retyped(df_input[name], df_output[name]))
 
 
 def frozen_fields(
@@ -273,8 +360,15 @@ def frozen_fields(
     exempt a column the regenerated input dropped from the very comparison written to
     catch that column changing, and the app would go on serving and exporting the copy
     frozen at the first build with nothing rendered and nothing logged.
+
+    The comparison runs on the reconciled pair, so a column stored under one spelling of
+    a type and read back under another is not a value that changed. What the wider type
+    additionally allows still is: a number that became missing between the two frames is
+    a correction, and it is reported here rather than passed over as a spelling.
     """
-    return sorted(name for name in fields if not df_input[name].equals(df_output[name]))
+    return sorted(
+        name for name in fields if not _same_values(df_input[name], df_output[name])
+    )
 
 
 def needs_write(on_disk: pd.DataFrame | None, note_fields: tuple[str, ...]) -> bool:
@@ -420,10 +514,15 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
 
     Once both frames are known to carry those columns, they are asked to agree on the
     type of them before either comparison reads a value, `retyped_fields` carrying what
-    that ordering is worth. It is why the alignment guard follows the input's own column
-    check rather than preceding it: the identifier is one of the columns whose type can
-    move, so the check that establishes the question has to run before the guard that
-    would otherwise answer it wrong.
+    that ordering is worth. Agreeing is not spelling it the same way: a pair one type
+    holds without loss is reconciled for the length of the comparisons and refused
+    nowhere, so a pandas or arrow release moving under a stored parquet no longer puts
+    the accumulated annotation out of reach.
+
+    It is also why the alignment guard follows the input's own column check rather than
+    preceding it: the identifier is one of the columns whose type can move, so the check
+    that establishes the question has to run before the guard that would otherwise
+    answer it wrong.
 
     Every guard logs what the page withholds, and says on the page that it did. The
     withholding is by disclosure: a column, a path, a row count and a position are each

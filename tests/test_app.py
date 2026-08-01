@@ -111,6 +111,20 @@ def test_aligned_rejects_a_non_contiguous_index():
     assert not aligned(data, gapped, ID)
 
 
+def test_aligned_accepts_ids_whose_type_moved_without_their_values():
+    """The cohort is what this answers on, and a backend is not a cohort.
+
+    `Series.equals` reads the dtype beside the values, so the two frames designating the
+    same documents came back as different ones the day a parquet round trip landed the
+    identifier on the other spelling of text.
+    """
+    data = make_input()
+    retyped = data.drop(columns=[TEXT]).astype({ID: "string"})
+
+    assert aligned(data, retyped, ID)
+    assert not data[ID].equals(retyped[ID])
+
+
 ### INPUT STAMP ---------------------------------------------------------------
 
 
@@ -570,6 +584,36 @@ def test_frozen_fields_raises_on_a_name_a_frame_does_not_carry():
         frozen_fields(df_input, df_output, (ESTIMATE, "pat_age"))
 
 
+def test_frozen_fields_names_a_value_that_changed_under_a_reconciled_type():
+    """The reconciliation covers how a type is spelled and never what a column holds.
+
+    Both moves land on one column here, which is the case a comparison run on the
+    converted pair could swallow whole: the type is stepped over, the corrected value
+    is not.
+    """
+    df_output = make_input()
+    df_input = make_input().astype({"pat_age": "Int64"})
+    df_input.loc[1, "pat_age"] = 71
+
+    assert not retyped_fields(df_input, df_output, ("pat_age",))
+    assert frozen_fields(df_input, df_output, ("pat_age",)) == ["pat_age"]
+
+
+def test_frozen_fields_names_a_missing_value_the_wider_type_allowed():
+    """A value the narrower type could not hold at all, which is still a value.
+
+    The nullable integer is a family the reconciliation accepts, and the pair is only
+    accepted as far as the type: an answer that became missing between the two frames
+    is a correction the annotator has to be stopped on, not a spelling.
+    """
+    df_output = make_input()
+    df_input = make_input().astype({"pat_age": "Int64"})
+    df_input.loc[1, "pat_age"] = pd.NA
+
+    assert not retyped_fields(df_input, df_output, ("pat_age",))
+    assert frozen_fields(df_input, df_output, ("pat_age",)) == ["pat_age"]
+
+
 def test_load_frames_stops_on_an_input_corrected_after_the_output_was_built(
     project, caplog
 ):
@@ -761,13 +805,17 @@ def test_load_frames_does_not_write_over_a_save_it_waited_for(project):
 
 @pytest.mark.parametrize(
     ("column", "dtype"),
-    [("pat_age", "Int64"), ("pat_age", "float64"), (ID, "string")],
+    [("pat_age", "float64"), ("pat_age", "str"), (ID, "category")],
 )
 def test_retyped_fields_names_a_column_whose_type_moved_under_equal_values(column, dtype):
     """`Series.equals` answers on the values and the dtype at once, this one on neither.
 
     The values are held equal across the pair on purpose: what the guard has to see is
     the type alone, since that is the case the two comparisons downstream misreport.
+
+    Every pair here crosses two families, which is what keeps it reported. The
+    reconciliation knows two families and nothing outside them is guessed at: a
+    conversion accepted by mistake is a value that reads as equal without being one.
     """
     df_input = make_input().astype({column: dtype})
     df_output = make_input()
@@ -792,6 +840,55 @@ def test_retyped_fields_raises_on_a_name_a_frame_does_not_carry():
         retyped_fields(df_input, df_output, ("pat_age",))
 
 
+@pytest.mark.parametrize(
+    ("column", "dtype"),
+    [("pat_age", "Int64"), ("pat_age", "int32"), (ID, "string"), (ID, "object")],
+)
+def test_retyped_fields_reconciles_a_spelling_that_holds_the_same_values(column, dtype):
+    """Two spellings of one type are what a version bump lands on, not a drift.
+
+    The pair is asked of the value guard in the same breath, which is where the report
+    was doing its damage: reading the type alone would leave `frozen_fields` answering
+    through `Series.equals` on the dtype, and the app stopped on a value nobody touched.
+
+    The last assertion is what keeps this from passing vacuously: pandas itself still
+    calls the two columns different, and the reconciliation is what steps over it.
+    """
+    df_input = make_input().astype({column: dtype})
+    df_output = make_input()
+
+    assert not retyped_fields(df_input, df_output, (column,))
+    assert not frozen_fields(df_input, df_output, (column,))
+    assert not df_input[column].equals(df_output[column])
+
+
+def test_retyped_fields_reports_a_conversion_that_would_not_hold_every_value():
+    """The reconciliation is closed on failure, on an integer past the signed range.
+
+    `astype` refuses that cast rather than wrapping it, so the pair comes back untouched
+    and the column is reported: a type that cannot hold what the other carries is not
+    the same type spelled twice.
+    """
+    df_input = pd.DataFrame({"count": pd.Series([2**63], dtype="uint64")})
+    df_output = pd.DataFrame({"count": pd.Series([1], dtype="int64")})
+
+    assert retyped_fields(df_input, df_output, ("count",)) == ["count"]
+
+
+def test_retyped_fields_reports_an_object_column_holding_more_than_strings():
+    """An object column is a family only where every value it holds is a string.
+
+    The dtype alone answers nothing here, `is_string_dtype` holding for any object
+    column whatever sits in it, so the contents are what decides. A mixed one converts
+    to text and compares equal against the digits someone wrote as digits.
+    """
+    df_output = make_input()
+    df_input = make_input()
+    df_input[ID] = pd.Series(["d0", "d1", 2], dtype=object)
+
+    assert retyped_fields(df_input, df_output, (ID,)) == [ID]
+
+
 @pytest.mark.parametrize("column", ["pat_age", ID])
 def test_load_frames_names_a_type_that_moved_rather_than_a_value_or_a_cohort(
     project, column, caplog
@@ -808,7 +905,7 @@ def test_load_frames_names_a_type_that_moved_rather_than_a_value_or_a_cohort(
     folder = Path(config.work_dir) / "data" / "2023-01"
     started = make_input().drop(columns=[TEXT]).assign(**{ESTIMATE: "", COMMENT: ""})
     started.to_parquet(output, index=False)
-    dtype = "string" if column == ID else "Int64"
+    dtype = "category" if column == ID else "float64"
     make_input().astype({column: dtype}).to_parquet(
         folder / "2023-01_avc_annot_data_input-review.parquet"
     )
@@ -819,6 +916,34 @@ def test_load_frames_names_a_type_that_moved_rather_than_a_value_or_a_cohort(
     assert app.error[0].value == MESSAGE_TYPES
     assert app.error[0].value not in (MESSAGE_VALUES, MESSAGE_MISMATCH)
     assert f"'{column}': '{dtype} against " in caplog.text
+
+
+def test_load_frames_resumes_on_an_input_whose_types_were_spelled_otherwise(project):
+    """What the reconciliation buys, on the path the app actually takes.
+
+    The output is written once and read back a release later, so the two frames meet
+    under two spellings of one type on a library that moved underneath them. The run
+    stopped there with the accumulated annotation intact and out of reach, and the
+    rebuild the message prescribed reproduced the very type it regenerated by.
+
+    The output is asserted byte for byte: a run that resumes by rewriting the gold
+    standard under the new types is not the same outcome as one that reads it.
+    """
+    config, output = project
+    folder = Path(config.work_dir) / "data" / "2023-01"
+    started = make_input().drop(columns=[TEXT]).assign(**{ESTIMATE: ["oui", "", ""]})
+    started.assign(**{COMMENT: ""}).to_parquet(output, index=False)
+    before = output.read_bytes()
+    make_input().astype({ID: "string", "pat_age": "Int64"}).to_parquet(
+        folder / "2023-01_avc_annot_data_input-review.parquet"
+    )
+
+    app = run_shell(config)
+
+    assert not app.exception
+    assert not app.error
+    assert app.text[0].value == "3/3"
+    assert output.read_bytes() == before
 
 
 def test_load_frames_refuses_a_reshaped_input_without_waiting_on_the_output_lock(
