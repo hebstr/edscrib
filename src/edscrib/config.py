@@ -5,9 +5,10 @@ package derives everything the app body needs from that description. Nothing in 
 module names a domain concept: every column name arrives from the consumer.
 
 Construction is where this package raises, against every other module, which logs the
-detail and stops the app on one message. Four refusals live here: a group that is not
-a sequence of radio/text rows, a field whose options do not match its kind, and a
-configuration or a tutorial pair built positionally. They raise because each one makes
+detail and stops the app on one message. Six refusals live here: a group that is not a
+sequence of radio/text rows, a field whose options do not match its kind, an estimate
+that does not name a radio of a persisted group, and a configuration, a tutorial pair
+or a stylesheet pair built positionally. They raise because each one makes
 a derivation unsound rather than a run wrong, `rows` resting on the pairing and the
 export on the column names being the ones meant, so an object violating them must not
 exist rather than exist and be caught a rerun later.
@@ -15,18 +16,27 @@ exist rather than exist and be caught a rerun later.
 A consumer declares its configuration at module scope, outside every boundary this
 package owns, so an uncaught refusal reaches the framework's own handler, which paints
 its traceback and the server's paths into the browser of whoever is looking. What
-escapes is that traceback and never the message: the three name only what this module
-itself declares, a widget kind or an argument, and never a column, a value or a path.
+escapes is that traceback and never the message: they name only what this module itself
+declares, a widget kind, a field of this shape or an argument, and never a column, a
+value or a path.
 A consumer constructing a configuration inside a rendered page owes it a boundary of
 its own.
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
 USER = "{user}"
+
+ANONYMOUS = "admin"
+"""The name a run with no login gate annotates under.
+
+It is not cosmetic: it binds the placeholder, so it is what the annotation columns are
+named after and what the gold standard carries for the life of the file. A deployment
+turning `auth` on later therefore starts fresh columns rather than continuing these.
+"""
 
 
 @dataclass(frozen=True)
@@ -104,10 +114,36 @@ class Tuto:
 
 
 @dataclass(frozen=True, kw_only=True)
+class Styles:
+    """The two stylesheets a page carries, each named for where it is injected.
+
+    Keyword-only and named for the reason `Tuto` is: two consecutive fields of one type,
+    and a transposition puts the page chrome inside the frame holding a clinical note
+    and the note's own rules over every widget of the app, which renders and is wrong
+    rather than raising.
+
+    The package ships neither, and the two roles are the whole of what it knows about
+    them. `app` reaches the page itself and styles what the render lays out, keyed on
+    the container names below; `text` is prefixed to the two places the render embeds
+    markup a page-level sheet cannot reach, the frame holding the document and the
+    sidebar footer.
+
+    The render emits container keys, which Streamlit turns into `st-key-<name>` classes:
+    `button-tuto`, `slider-doc`, `navigation`, `slider-note`, `sidebar-footer`, and
+    `button-download-visible` or `button-download-hidden`. Those names are the seam
+    `app` styles against, so they are part of what this package promises rather than an
+    implementation detail.
+    """
+
+    app: Path
+    text: Path
+
+
+@dataclass(frozen=True, kw_only=True)
 class AnnotConfig:
     """Everything one annotation app declares, and what the package derives from it.
 
-    Keyword-only where the two classes above are not, because three of the fourteen
+    Keyword-only where the two classes above are not, because four of the twenty-three
     fields are consecutive column names of one type and transposing two of them is
     silent all the way down: the export then carries the document identifier the row
     counter is there to keep out of it, and both identity guards, the alignment one and
@@ -115,6 +151,28 @@ class AnnotConfig:
     pass on any two frames of equal length. A transposition in either of the others
     fails loudly, on the group's own validation or on the column the render cannot
     find. A consumer meets this one in its own type checker rather than at render.
+
+    `estimate_field` names the one answer the run is measured by, and five derivations
+    read it: where the cursor opens, whether the save button is live, what the progress
+    gauge shows, whether the export button reads as complete, and which rows the export
+    carries. It is declared rather than taken as the first persisted field, the shape
+    being keyword-only precisely because a column name resting on a position is what
+    goes wrong quietly; the guard below is what keeps the declaration honest.
+
+    `table_fields` describes the output's own columns, the summary table being sourced
+    from it, and it carries the counter like any other column. The two heading mappings
+    run in opposite directions and each is written the way its own render reads it:
+    `meta_fields` is keyed on the column, a line of metadata being a frame selected then
+    relabelled, and `footer_fields` on the heading, a footer being a heading painted then
+    filled. The column side is what the declared-column guard reads in both cases.
+
+    `column_widths` is keyed on column names rather than on the headings they render
+    under, so it shares a key space with the fields above and a width outlives a
+    relabelling. A column it does not name takes whatever the framework gives it.
+
+    `export_excluded` holds the answers that keep a document out of the export. The
+    unanswered sentinel is not among them and never needs to be: the package excludes it
+    on its own, an export being a gold standard and an empty answer being no answer.
     """
 
     work_dir: str | Path
@@ -122,15 +180,38 @@ class AnnotConfig:
     split: str
     input_stem: str
     output_stem: str
+    secrets: str | Path
+    styles: Styles
     groups: tuple[FieldGroup, ...]
     table_fields: tuple[str, ...]
     index_field: str
     id_field: str
     text_field: str
+    estimate_field: str
     meta_fields: Mapping[str, str]
+    footer_fields: Mapping[str, str] = field(default_factory=dict)
+    column_widths: Mapping[str, int] = field(default_factory=dict)
+    export_excluded: tuple[str, ...] = ()
+    login_info: str = ""
+    export_info: str = ""
     auth: bool = False
+    download_visible: bool = False
     tuto: Tuto | None = None
     data_suffix: str = ""
+
+    def __post_init__(self) -> None:
+        estimates = {
+            note.name
+            for group in self.groups
+            if group.persisted
+            for note in group.fields
+            if note.kind == "radio"
+        }
+
+        if self.estimate_field not in estimates:
+            raise ValueError(
+                "estimate_field names a radio of a persisted group, and none matches"
+            )
 
     def resolve(self, user: str) -> "AnnotConfig":
         """Bind the authenticated user into the column names that carry it.
@@ -142,26 +223,28 @@ class AnnotConfig:
             replace(
                 group,
                 fields=tuple(
-                    replace(field, name=field.name.replace(USER, user))
-                    for field in group.fields
+                    replace(note, name=note.name.replace(USER, user))
+                    for note in group.fields
                 ),
             )
             for group in self.groups
         )
         table = tuple(name.replace(USER, user) for name in self.table_fields)
-        return replace(self, groups=groups, table_fields=table)
+        return replace(
+            self,
+            groups=groups,
+            table_fields=table,
+            estimate_field=self.estimate_field.replace(USER, user),
+        )
 
     @property
     def rendered(self) -> tuple[NoteField, ...]:
-        return tuple(field for group in self.groups for field in group.fields)
+        return tuple(note for group in self.groups for note in group.fields)
 
     @property
     def persisted_fields(self) -> tuple[str, ...]:
         return tuple(
-            field.name
-            for group in self.groups
-            if group.persisted
-            for field in group.fields
+            note.name for group in self.groups if group.persisted for note in group.fields
         )
 
     @property
@@ -179,6 +262,19 @@ class AnnotConfig:
         """
         fields = self.rendered
         return tuple(tuple(fields[i : i + 2]) for i in range(0, len(fields), 2))
+
+    @property
+    def estimate_options(self) -> tuple[str, ...]:
+        """The answers the estimate offers, which construction guarantees there are.
+
+        A radio is refused without options and `estimate_field` is refused unless it
+        names one, so the search below always finds a non-empty tuple. Both refusals are
+        what this rests on rather than a fallback of its own: an empty tuple handed back
+        here would make every document read as unanswered and the export as complete.
+        """
+        return next(
+            note.options for note in self.rendered if note.name == self.estimate_field
+        )
 
     @property
     def export_fields(self) -> tuple[str, ...]:

@@ -24,7 +24,7 @@ from edscrib.app import (
     unresolved_fields,
     write_output,
 )
-from edscrib.config import USER, AnnotConfig, FieldGroup, NoteField, Tuto
+from edscrib.config import USER, AnnotConfig, FieldGroup, NoteField, Styles, Tuto
 from edscrib.messages import (
     MESSAGE_COLUMNS,
     MESSAGE_DUPLICATES,
@@ -60,6 +60,11 @@ def make_config(work_dir):
         split="2023-01",
         input_stem="input-review",
         output_stem="output-review",
+        secrets=Path(work_dir) / "secrets.toml",
+        styles=Styles(
+            app=Path(work_dir) / "style_app.css",
+            text=Path(work_dir) / "style_text.css",
+        ),
         groups=(
             FieldGroup(
                 fields=(
@@ -72,6 +77,7 @@ def make_config(work_dir):
         index_field="n",
         id_field=ID,
         text_field=TEXT,
+        estimate_field=ESTIMATE,
         meta_fields={"pat_age": "ÂGE"},
     )
 
@@ -246,7 +252,7 @@ def test_unresolved_fields_is_empty_on_a_configuration_carrying_no_placeholder(t
 def test_unresolved_fields_walks_every_field_the_binding_never_touches(
     tmp_path, field, value, named
 ):
-    """`resolve` binds two of the fourteen, so the guard is what covers the twelve.
+    """`resolve` binds three of the twenty-three, so the guard covers the twenty.
 
     The walk is generic, so a field the shape grows later is covered without anyone
     remembering to add it here, which is the failure this replaces.
@@ -271,6 +277,12 @@ def test_unresolved_fields_reaches_a_label_and_a_group_that_is_never_written(tmp
                     NoteField("note_comment_b", f"COMMENTAIRE {USER}", "text"),
                 ),
                 persisted=False,
+            ),
+            FieldGroup(
+                fields=(
+                    NoteField(ESTIMATE, "AVC", "radio", VALUES),
+                    NoteField(COMMENT, "COMMENTAIRE", "text"),
+                ),
             ),
         ),
     )
@@ -299,6 +311,7 @@ def test_load_frames_stops_on_a_configuration_that_was_never_resolved(project, c
             ),
         ),
         table_fields=("n", f"note_estimate_{USER}"),
+        estimate_field=f"note_estimate_{USER}",
     )
 
     app = run_shell(unresolved)
@@ -454,6 +467,7 @@ def test_load_frames_stops_on_a_field_annotating_a_column_the_input_carries(
             ),
         ),
         table_fields=("n", "pat_age"),
+        estimate_field="pat_age",
     )
 
     app = run_shell(collided)
@@ -764,6 +778,7 @@ def test_load_frames_refuses_a_reference_the_output_alone_carries(project, caplo
                 ),
             ),
         ),
+        estimate_field="note_estimate_m",
     )
 
     app = run_shell(reconciler)
@@ -885,6 +900,7 @@ def test_load_frames_does_not_write_over_a_save_it_waited_for(project):
             ),
         ),
         table_fields=("n",),
+        estimate_field="note_estimate_b",
     )
 
     holder = FileLock(f"{output}.lock")

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from edscrib.config import AnnotConfig, FieldGroup, NoteField, Tuto
+from edscrib.config import AnnotConfig, FieldGroup, NoteField, Styles, Tuto
 
 VALUES = ("oui", "peut-être", "non")
 
@@ -24,6 +24,8 @@ def make_config(groups, table_fields=("n",), **kwargs):
         split="2023-01",
         input_stem="input-review",
         output_stem="output-review",
+        secrets="annot/secrets.toml",
+        styles=Styles(app=Path("style_app.css"), text=Path("style_text.css")),
         groups=groups,
         table_fields=table_fields,
         index_field="n",
@@ -40,6 +42,7 @@ def review():
     return make_config(
         groups=(FieldGroup(fields=pair("{user}", "")),),
         table_fields=("n", "note_estimate_{user}", "note_comment_{user}"),
+        estimate_field="note_estimate_{user}",
     )
 
 
@@ -58,6 +61,7 @@ def merge():
             FieldGroup(fields=pair("merge", "_FINAL")),
         ),
         table_fields=("n", "note_estimate_fanny", "note_estimate_merge"),
+        estimate_field="note_estimate_merge",
     )
 
 
@@ -174,7 +178,7 @@ def test_a_non_persisted_group_can_be_declared_read_only(merge):
 
 
 def test_the_configuration_refuses_a_positional_construction(review):
-    """Three of the fourteen fields are consecutive column names of one type.
+    """Four of the twenty-three fields are consecutive column names of one type.
 
     Transposing the counter and the identifier is silent all the way down: the export
     carries the identifier the counter is there to keep out of it, and both identity
@@ -215,6 +219,48 @@ def test_the_tutorial_refuses_a_positional_pair():
 
 def test_a_configuration_declares_no_tutorial_by_default(review):
     assert review.tuto is None
+
+
+def test_the_stylesheets_refuse_a_positional_pair():
+    """Two consecutive fields of one type, the third pair to be keyword-only for it.
+
+    A transposition renders: the page chrome lands inside the frame holding a clinical
+    note, and the note's own rules reach every widget of the app. Nothing raises, and
+    what a deployment sees is a page that looks wrong for no stated reason.
+    """
+    sheets = (Path("style_app.css"), Path("style_text.css"))
+
+    with pytest.raises(TypeError, match="positional"):
+        Styles(*sheets)  # pyrefly: ignore[missing-argument, unexpected-positional-argument]
+
+
+### THE ESTIMATE ---------------------------------------------------------------
+
+
+def test_the_estimate_offers_the_answers_its_own_field_declares(merge):
+    """Five derivations read this field, and one of them asks what it offers."""
+    assert merge.estimate_options == VALUES
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["note_comment_merge", "note_estimate_fanny", "note_estimate_absent"],
+    ids=["a comment", "a reference radio", "no field at all"],
+)
+def test_the_configuration_refuses_an_estimate_that_is_not_a_persisted_radio(merge, name):
+    """The one field that is a column name and a role at once, so it is checked.
+
+    Five derivations read it: where the cursor opens, whether the save button is live,
+    what the gauge shows, whether the export reads as complete, and which rows the
+    export carries. None of them can tell a wrong name from a right one, and two answer
+    silently: a comment field makes every document read as answered, and a reference
+    radio measures the run by an annotator who is not the one at the keyboard.
+
+    Declared rather than taken as the first persisted field, which is why the check
+    exists at all: a derivation off a position needs no check and is wrong for free.
+    """
+    with pytest.raises(ValueError, match="radio of a persisted group"):
+        replace(merge, estimate_field=name)
 
 
 ### GUARD ----------------------------------------------------------------------

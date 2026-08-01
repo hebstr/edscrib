@@ -1,8 +1,10 @@
 """The body an annotation app reduces to, driven by its `AnnotConfig`.
 
-This module holds the data path: resolving the two parquet paths, reading the input,
-building or resuming the output, and the guards that stand between a reshaped input
-and a mislabelled gold standard. Rendering lives beside it.
+Two halves. The data path resolves the two parquet paths, reads the input, builds or
+resumes the output, and runs the guards that stand between a reshaped input and a
+mislabelled gold standard. The render lays the page out from the same configuration and
+calls the three modules that hold widgets of their own, so a consuming app is an import,
+a configuration literal and one call to `run_app`.
 """
 
 import dataclasses
@@ -16,9 +18,14 @@ import pandas as pd
 import streamlit as st
 from filelock import FileLock
 
-from edscrib.config import USER, AnnotConfig
-from edscrib.io import build_output, data_path, read_data
+from edscrib.auth import login
+from edscrib.config import ANONYMOUS, USER, AnnotConfig, NoteField, Tuto
+from edscrib.export import download
+from edscrib.io import EMPTY, build_output, data_path, read_data
 from edscrib.messages import (
+    LABEL_DOWNLOAD,
+    LABEL_SAVE,
+    LABEL_TUTO,
     MESSAGE_COLUMNS,
     MESSAGE_DUPLICATES,
     MESSAGE_LABELS,
@@ -27,6 +34,11 @@ from edscrib.messages import (
     MESSAGE_UNAVAILABLE,
     MESSAGE_VALUES,
 )
+from edscrib.navigation import navigation
+
+_COLUMNS_BODY = (3, 1)
+_COLUMNS_ROW = (1.1, 2.4)
+_COLUMNS_NAVIGATION = (0.5, 3.5, 0.5)
 
 _logger = logging.getLogger(__name__)
 
@@ -142,8 +154,8 @@ def same_file(input_path: str | Path, output_path: str | Path) -> bool:
 def unresolved_fields(config: AnnotConfig) -> list[str]:
     """Every string the configuration carries that still names the placeholder.
 
-    `resolve` binds it in the field names and in the table fields, and nowhere else,
-    which is a decision the shape documents rather than an omission to patch: a
+    `resolve` binds it in the field names, in the table fields and in the estimate, and
+    nowhere else, which is a decision the shape documents rather than an omission: a
     placeholder in a working directory or in an identifier is an authoring mistake to
     name, never one to make work. So the binding stays narrow and this is what covers
     the rest, a label reaching the annotator with the braces beside the clinical
@@ -151,8 +163,8 @@ def unresolved_fields(config: AnnotConfig) -> list[str]:
 
     The walk is generic rather than a list of the fields as they stand, since the shape
     is still growing and an enumeration stops covering whatever is added next. That is
-    the very failure it is written against: `resolve`'s own two-item list is what left
-    the other twelve fields uncovered.
+    the very failure it is written against: `resolve`'s own short list is what left the
+    other twenty fields uncovered.
     """
     return sorted({value for value in _strings(config) if USER in value})
 
@@ -502,6 +514,12 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame, Path]:
     output, so an excerpt of the clinical text is a column the input generation creates,
     which reaches the output through the first copy like any other.
 
+    The footer's columns are declared too, on the same argument as the table's: the
+    render reads them by name off the output, so one the deployment stopped producing is
+    a column to name here rather than a lookup that raises mid-page and arrives as the
+    generic message. They are read from the values of that mapping, its keys being the
+    headings a page paints and not columns to look for anywhere.
+
     Which is why the text itself, declared anywhere, is refused by name and up front.
     `build_output` drops it unconditionally, so the column cannot exist in the output
     and the check against it would report a name the operator then goes looking for in
@@ -649,6 +667,7 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame, Path]:
                     config.id_field,
                     *config.export_fields,
                     *config.table_fields,
+                    *config.footer_fields.values(),
                     *(field.name for field in config.rendered),
                 )
             )
@@ -764,3 +783,419 @@ def load_frames(config: AnnotConfig) -> tuple[pd.DataFrame, pd.DataFrame, Path]:
         _halt(MESSAGE_UNAVAILABLE)
 
     return df_input, df_output, output_path
+
+
+def stylesheet(path: str | Path) -> str:
+    """A project stylesheet, wrapped in the tag that carries it into a page.
+
+    Read on every run rather than cached. `st.cache_data` is keyed on the qualified
+    name and global to the process, so a shared reader would need the path as an
+    argument to stay honest, and what it would buy back is a two-kilobyte read against
+    a page that reads a clinical note.
+    """
+    return f"<style>{Path(path).read_text(encoding='utf-8')}</style>"
+
+
+def cursor_seed(data: pd.DataFrame, estimate_field: str) -> int:
+    """Which document the run opens on: the last one answered, or the first.
+
+    The last answered rather than the one after it, so the annotator arrives on their
+    own last answer and can see what it was before moving on. A run with no answer at
+    all opens on the first document.
+    """
+    answered = data.index[data[estimate_field].ne(EMPTY)]
+    return 0 if answered.empty else int(answered.max())
+
+
+def exportable(config: AnnotConfig, data: pd.DataFrame) -> pd.DataFrame:
+    """The rows and columns an export carries.
+
+    A document with no answer is never in it, whatever the configuration says: an export
+    is a gold standard, and the empty sentinel is the absence of an answer rather than
+    one of the values a deployment may want to keep out.
+
+    The selection is a membership test and not a `query` expression. That one takes the
+    column name and every excluded value into a string it then parses, so a column named
+    with a space or an answer carrying an apostrophe fails at the parse, inside the
+    render, on labels a French deployment writes by hand.
+    """
+    excluded = (EMPTY, *config.export_excluded)
+    kept = ~data[config.estimate_field].isin(excluded)
+    return data.loc[kept, list(config.export_fields)]
+
+
+def complete(config: AnnotConfig, data: pd.DataFrame) -> bool:
+    """Whether every document carries one of the answers the estimate offers."""
+    return bool(data[config.estimate_field].isin(config.estimate_options).all())
+
+
+def tuto_form(tuto: Tuto) -> None:
+    """Render the tutorial, which is the body of the dialog the sidebar opens.
+
+    A plain function at module level, because `AppTest` runs no `st.dialog` body
+    (streamlit#9786): what the decorated shell holds is the display, and this is what a
+    test reaches.
+    """
+    st.markdown(tuto.text.read_text(encoding="utf-8"))
+
+    with tuto.media.open("rb") as stream:
+        st.video(stream)
+
+
+def render_field(note: NoteField, index: int) -> None:
+    """Render one annotation widget and keep its answer under the field's own name.
+
+    Two names are in play and neither substitutes for the other. The widget's own key
+    folds in the cursor, so moving to another document renders another widget rather
+    than carrying this one's answer along; the field name is where the answer is read
+    back from, by the save and by everything that reads the run.
+
+    An answer the options no longer offer selects nothing rather than raising, which is
+    what a document annotated before a level was renamed holds. The annotator then sees
+    an empty radio on a document that has an answer, and the answer is still in the file:
+    it is a display of what is there and not a correction of it.
+
+    `persist_state` is passed rather than inherited. A field of a group that is not
+    rendered on this run loses its session value, which is the regime of a conditional
+    render, and the default is `None` today: a version bump changing that would change
+    what a widget remembers with nothing here to fail.
+    """
+    state = st.session_state
+    key = f"key_{note.name}_{index}"
+
+    if note.kind == "radio":
+        answer = state[note.name]
+        state[note.name] = st.radio(
+            label=note.label,
+            options=note.options,
+            index=note.options.index(answer) if answer in note.options else None,
+            key=key,
+            disabled=not note.editable,
+            persist_state=None,
+        )
+        return
+
+    state[note.name] = st.text_input(
+        label=note.label,
+        value=state[note.name],
+        key=key,
+        disabled=not note.editable,
+        persist_state=None,
+    )
+
+
+def _render_tuto(tuto: Tuto) -> None:
+    """Render the button that opens the tutorial, and the dialog behind it.
+
+    The button is disabled where either file is missing, which answers for the instant
+    it is drawn rather than for the click. `disabled` is a frontend attribute the server
+    does not consult when dispatching, so the dialog carries its own boundary instead of
+    resting on it: what a missing asset raises is a path, and an uncaught raise in a
+    dialog reaches Streamlit's own handler, which paints it.
+
+    That boundary cannot be the one around the render either. `st.dialog` is a fragment,
+    and a fragment rerun calls the body Streamlit stored rather than the enclosing
+    function again, so a failure on any rerun after the click lands outside `run_app`.
+    """
+
+    @st.dialog(title=" ", width="large")
+    def dialog() -> None:
+        try:
+            tuto_form(tuto)
+        except Exception:
+            _logger.exception("The tutorial could not be rendered")
+            st.error(MESSAGE_UNAVAILABLE)
+
+    with st.sidebar.container(key="button-tuto"):
+        clicked = st.button(
+            label=LABEL_TUTO,
+            icon=":material/videocam:",
+            width="stretch",
+            disabled=not (tuto.text.exists() and tuto.media.exists()),
+        )
+
+        if clicked:
+            dialog()
+
+
+def moved_to(rows: list[int], index: int) -> int | None:
+    """Where a row selection moves the cursor, or nothing where it does not move.
+
+    A selection is a position in the frame as displayed, and the cursor is a position
+    too, so the one is the other: the guards have established that the output is
+    labelled from zero without a gap, and the table is that frame in its own order. The
+    counter column is displayed and never converted back into a position, which is what
+    a run whose counter does not start at one would have made wrong without saying so.
+
+    A selection landing on the document already shown moves nothing, since what follows
+    a move is a rerun and that one would draw the same page again on every pass.
+
+    It is a function of its own because `AppTest` offers no way to select a row, the
+    same reason a dialog body is one: this is the shape that can be tested, and the
+    shell around it holds the display.
+    """
+    if not rows:
+        return None
+
+    selected = rows[0]
+    return None if selected == index else selected
+
+
+def _render_table(config: AnnotConfig, df_output: pd.DataFrame, index: int) -> None:
+    """Render the summary table and let a row selection move the cursor.
+
+    The key folds in the number of saves as well as the cursor. A save rewrites the
+    column this table displays, and a widget keyed on the cursor alone would hand back
+    the selection state of a table drawn before the write.
+    """
+    state = st.session_state
+    labels = {note.name: note.label for note in config.rendered}
+
+    event = st.dataframe(
+        data=df_output[list(config.table_fields)],
+        on_select="rerun",
+        selection_mode="single-row",
+        column_config={
+            name: st.column_config.Column(
+                label=labels.get(name),
+                width=config.column_widths.get(name),
+            )
+            for name in config.table_fields
+        },
+        key=f"df_{state.save_count}_{index}",
+    )
+
+    moved = moved_to(event["selection"]["rows"], index)
+
+    if moved is not None:
+        state.doc_index = moved
+        st.rerun()
+
+
+def _render_body(
+    config: AnnotConfig,
+    df_input: pd.DataFrame,
+    df_output: pd.DataFrame,
+    index: int,
+    text_style: str,
+) -> None:
+    """Render the metadata line, the document, and the summary table beside it.
+
+    The metadata are read from the output and the document from the input, which is the
+    one column the output does not carry. Both frames designate the same document at
+    this position, the alignment guard being what establishes that and the only thing
+    that does.
+
+    The document goes into a frame of its own with the project's text stylesheet
+    prefixed to it. A clinical note is markup a page-level sheet does not reach, and it
+    is not the app's own markup either: rendering it into the page would let a note
+    style the widgets around it.
+    """
+    st.dataframe(
+        data=(
+            df_output.loc[:, list(config.meta_fields)]
+            .iloc[[index]]
+            .rename(columns=dict(config.meta_fields))
+        ),
+        hide_index=True,
+        column_config={
+            heading: st.column_config.Column(width=config.column_widths[name])
+            for name, heading in config.meta_fields.items()
+            if name in config.column_widths
+        },
+    )
+
+    col_text, col_table = st.columns(_COLUMNS_BODY)
+
+    with col_text:
+        st.iframe(src=text_style + df_input[config.text_field].iloc[index])
+
+    with col_table:
+        _render_table(config, df_output, index)
+
+
+def _render_sidebar(
+    config: AnnotConfig,
+    df_output: pd.DataFrame,
+    output_path: Path,
+    index: int,
+    title: str,
+    text_style: str,
+) -> None:
+    """Render the sidebar: tutorial, cursor, fields, navigation, gauge, export, footer.
+
+    The groups are what the layout reads, rather than the flat pairing: a divider is
+    what separates one group from the next, and a render that flattened them would have
+    to infer the boundary from a property that means something else.
+
+    The document slider is a position throughout, offered one-based because that is what
+    a person counts from. The counter column is what the table displays, and neither
+    widget turns a value read from the frame back into a position.
+
+    The gauge is keyed on the number of saves and the fields on the cursor, which is the
+    difference between them: the gauge counts what reached the disk across the whole run
+    and stands still on an arrow, where a field belongs to one document.
+    """
+    state = st.session_state
+    nrow = len(df_output)
+
+    st.sidebar.space()
+
+    if config.tuto is not None:
+        _render_tuto(config.tuto)
+
+    st.sidebar.space("stretch")
+
+    with st.sidebar.container(key="slider-doc"):
+        position = st.slider(
+            label=" ",
+            label_visibility="collapsed",
+            value=index + 1,
+            min_value=1,
+            max_value=nrow,
+            key=f"slider_doc_{index}",
+            persist_state=None,
+        )
+
+        if position - 1 != index:
+            state.doc_index = position - 1
+            st.rerun()
+
+    for rank, group in enumerate(config.groups):
+        if rank:
+            st.sidebar.divider()
+            st.sidebar.space("stretch")
+
+        pairs = zip(group.fields[::2], group.fields[1::2], strict=True)
+
+        for estimate, comment in pairs:
+            col_estimate, col_comment = st.sidebar.columns(_COLUMNS_ROW)
+
+            with col_estimate:
+                render_field(estimate, index)
+
+            with col_comment:
+                render_field(comment, index)
+
+    st.sidebar.space("stretch")
+
+    with st.sidebar.container(key="navigation"):
+        navigation(
+            output_path,
+            nrow,
+            config.persisted_fields,
+            columns=_COLUMNS_NAVIGATION,
+            can_save=state[config.estimate_field] not in (EMPTY, None),
+            save_label=LABEL_SAVE,
+            id_field=config.id_field,
+            doc_id=df_output[config.id_field].iloc[index],
+        )
+
+    with st.sidebar.container(key="slider-note"):
+        st.slider(
+            label=" ",
+            label_visibility="collapsed",
+            value=int(df_output[config.estimate_field].ne(EMPTY).sum()),
+            max_value=nrow,
+            key=f"slider_note_{state.save_count}",
+            persist_state=None,
+        )
+
+    visibility = "visible" if config.download_visible else "hidden"
+
+    with st.sidebar.container(key=f"button-download-{visibility}"):
+        download(
+            config.secrets,
+            exportable(config, df_output),
+            filename=title,
+            label=LABEL_DOWNLOAD,
+            info=config.export_info,
+            button_type="primary" if complete(config, df_output) else "secondary",
+        )
+
+    st.sidebar.space("stretch")
+
+    with st.sidebar.container(key="sidebar-footer"):
+        for heading, name in config.footer_fields.items():
+            st.sidebar.html(
+                text_style
+                + f"<p class='sidebar-footer-title'>{heading}</p>"
+                + f"<p class='sidebar-footer-{name}'>{df_output[name].iloc[index]}</p>"
+            )
+
+
+def run_app(config: AnnotConfig) -> None:
+    """Render one annotation app, from its configuration and nothing else.
+
+    A consuming entrypoint is an import, a configuration literal and this call. Whatever
+    the two apps of a deployment differ by is expressed in that literal: the two file
+    stems, the fields and their labels, the summary table's columns, how many groups the
+    sidebar lays out, whether a tutorial is offered, and which groups are written back.
+
+    The order is not cosmetic. The login gate runs first, since the answers it gives are
+    what the column names are bound to, and a run with no gate binds the anonymous name
+    rather than leaving the placeholder for a guard to catch. `st.set_page_config` has
+    to precede every other `st` call, so it follows the gate, which renders a form on
+    the run it withholds the app on and nothing at all on the run it lets through. The
+    data path comes before the session because where the cursor opens is read off the
+    output, and the guards have to have passed before a page is drawn on either frame.
+
+    Nothing reaches the browser from here. `client.showErrorDetails` defaults to `full`,
+    so an uncaught raise arrives with its traceback and the server's paths, to whoever is
+    looking; the detail goes to the module log and one sentence to the page. The clause
+    is broad on purpose, its point being that nothing escapes rather than that a known
+    list is handled, and it is safe against the framework's own control flow: `st.rerun`
+    and `st.stop` raise from `ScriptControlException`, which descends from
+    `BaseException`, as does the stop every guard of the data path leaves through.
+
+    The configuration object never enters `st.session_state`. Editing any file reimports
+    the class module, so an `isinstance` against an instance stored there fails against
+    its own class (streamlit#9638); it is an argument, and it stays one.
+
+    What this call does not do is guard the cadence of what it calls. It runs whole on
+    every click, so a validation added to a function it reaches is paid once per rerun
+    per annotator, which is the reason the guards of the data path are where they are
+    rather than spread through the render.
+    """
+    try:
+        user = ANONYMOUS
+
+        if config.auth:
+            authenticated = login(config.secrets, info=config.login_info)
+
+            if authenticated is None:
+                return
+
+            user = authenticated
+
+        config = config.resolve(user)
+        df_input, df_output, output_path = load_frames(config)
+        title = f"{config.split}_{config.proj}_{user}"
+
+        st.set_page_config(
+            page_title=title,
+            layout="wide",
+            initial_sidebar_state="expanded",
+            menu_items={},
+        )
+        st.markdown(stylesheet(config.styles.app), unsafe_allow_html=True)
+
+        state = st.session_state
+
+        if "doc_index" not in state:
+            state.doc_index = cursor_seed(df_output, config.estimate_field)
+
+        if "save_count" not in state:
+            state.save_count = 0
+
+        index = int(state.doc_index)
+        text_style = stylesheet(config.styles.text)
+
+        for note in config.rendered:
+            state[note.name] = df_output[note.name].iloc[index]
+
+        _render_body(config, df_input, df_output, index, text_style)
+        _render_sidebar(config, df_output, output_path, index, title, text_style)
+    except Exception:
+        _logger.exception("The annotation app could not be rendered")
+        _halt(MESSAGE_UNAVAILABLE)
