@@ -5,11 +5,10 @@ package derives everything the app body needs from that description. Nothing in 
 module names a domain concept: every column name arrives from the consumer.
 
 Construction is where this package raises, against every other module, which logs the
-detail and stops the app on one message. Seven refusals live here: a group that is not a
-sequence of radio/text rows, a group whose fields are editable against what it writes,
-a field whose options do not match its kind, an estimate that does not name a radio of a
-persisted group, and a configuration, a tutorial pair or a stylesheet pair built
-positionally. They raise because each one makes
+detail and stops the app on one message. Six refusals live here: a group that is not a
+sequence of radio/text rows, a field whose options do not match its kind, an estimate
+that does not name a radio of a persisted group, and a configuration, a tutorial pair
+or a stylesheet pair built positionally. They raise because each one makes
 a derivation unsound rather than a run wrong, `rows` resting on the pairing and the
 export on the column names being the ones meant, so an object violating them must not
 exist rather than exist and be caught a rerun later.
@@ -50,17 +49,15 @@ class NoteField:
     real answer, and it is what a save would put in the column. Options on a text are
     copy nothing reads.
 
-    `editable` says whether the annotator answers this field or reads it, and its group
-    says whether the answer is written: the two are one decision and the group refuses
-    them apart. It defaults to the value a group defaults to, so a field declared
-    without it belongs to a group that writes.
+    Whether the annotator answers this field or reads it is not declared here. It is
+    the group's `persisted`, that being the same decision said once: a field is live
+    exactly where its answer is written, and the render derives one from the other.
     """
 
     name: str
     label: str
     kind: Literal["radio", "text"]
     options: tuple[str, ...] = ()
-    editable: bool = True
 
     def __post_init__(self) -> None:
         if self.kind == "radio" and not self.options:
@@ -78,13 +75,11 @@ class FieldGroup:
     pairing is positional, so the guard below turns that tacit invariant into a named
     failure rather than a silently wrong layout.
 
-    What a group writes is also what it lets an annotator answer, and the two
-    declarations are refused where they disagree. A live widget in a group that is
-    never written takes an answer, shows it, and hands back the previous one as soon as
-    the cursor moves, with nothing written, nothing rendered and nothing logged; that
-    is what a reference group would be at the default. The other way round writes back
-    what it read, which no browser can make wrong, and states an intention the save
-    does not honour all the same.
+    What a group writes is also what it lets an annotator answer, and `persisted` says
+    both at once. A live widget in a group that is never written takes an answer, shows
+    it, and hands back the previous one as soon as the cursor moves, with nothing
+    written, nothing rendered and nothing logged; the render reads this flag rather
+    than a second one beside it, so that pairing cannot be declared at all.
 
     An empty one is refused by the same guard rather than by it: on no field at all the
     pairing holds vacuously, both slices being empty, and the group then contributes
@@ -98,12 +93,6 @@ class FieldGroup:
     def __post_init__(self) -> None:
         if not self.fields:
             raise ValueError("a group is a sequence of radio/text rows, got none")
-
-        if any(note.editable is not self.persisted for note in self.fields):
-            raise ValueError(
-                "a field is editable where its group is written, and one declares "
-                "the opposite"
-            )
 
         kinds = [field.kind for field in self.fields]
         rows = len(kinds) // 2

@@ -547,8 +547,8 @@ def two_groups(config):
         groups=(
             FieldGroup(
                 fields=(
-                    NoteField(REFERENCE[0], "AVC_REF", "radio", VALUES, editable=False),
-                    NoteField(REFERENCE[1], "COMM_REF", "text", editable=False),
+                    NoteField(REFERENCE[0], "AVC_REF", "radio", VALUES),
+                    NoteField(REFERENCE[1], "COMM_REF", "text"),
                 ),
                 persisted=False,
             ),
@@ -558,11 +558,12 @@ def two_groups(config):
 
 
 def test_a_reference_group_renders_read_only(project):
-    """The one interface change the descent takes on, and the reason the field exists.
+    """The one interface change the descent takes on, derived and never declared.
 
     Those widgets were editable and never saved, and the session loop rewrote them from
     the frame on every rerun, so an answer typed into one was lost at the next click
-    with nothing said.
+    with nothing said. The group declares only that it is not written, and this is what
+    holds the render to it: the field carries no flag of its own to disagree with.
     """
     config, _ = project
 

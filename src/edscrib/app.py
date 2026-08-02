@@ -856,8 +856,15 @@ def _field_key(name: str, index: int) -> str:
     return f"key_{name}_{index}"
 
 
-def render_field(note: NoteField, index: int) -> None:
+def render_field(note: NoteField, index: int, *, editable: bool) -> None:
     """Render one annotation widget and keep its answer under the field's own name.
+
+    `editable` is the group's `persisted`, read at the call site where both words are
+    visible together: a field is live exactly where its answer is written, and the two
+    were declared apart until the pairing that renders a live widget nothing saves
+    turned out to be what a group got by default. It is named for what this render
+    reads rather than for where it comes from, and it takes no default, the caller
+    being the one holding the group.
 
     Two names are in play and neither substitutes for the other. The widget's own key
     folds in the cursor, so moving to another document renders another widget rather
@@ -889,7 +896,7 @@ def render_field(note: NoteField, index: int) -> None:
             options=note.options,
             index=note.options.index(answer) if answer in note.options else None,
             key=key,
-            disabled=not note.editable,
+            disabled=not editable,
             persist_state=None,
         )
         return
@@ -898,7 +905,7 @@ def render_field(note: NoteField, index: int) -> None:
         label=note.label,
         value=state[note.name],
         key=key,
-        disabled=not note.editable,
+        disabled=not editable,
         persist_state=None,
     )
 
@@ -1154,10 +1161,10 @@ def _render_sidebar(
             col_estimate, col_comment = st.sidebar.columns(_COLUMNS_ROW)
 
             with col_estimate:
-                render_field(estimate, index)
+                render_field(estimate, index, editable=group.persisted)
 
             with col_comment:
-                render_field(comment, index)
+                render_field(comment, index, editable=group.persisted)
 
     st.sidebar.space("stretch")
 

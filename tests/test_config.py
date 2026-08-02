@@ -10,10 +10,10 @@ from edscrib.config import AnnotConfig, FieldGroup, NoteField, Styles, Tuto
 VALUES = ("oui", "peut-être", "non")
 
 
-def pair(name, label, *, editable=True):
+def pair(name, label):
     return (
-        NoteField(f"note_estimate_{name}", f"AVC{label}", "radio", VALUES, editable),
-        NoteField(f"note_comment_{name}", f"COMMENTAIRE{label}", "text", (), editable),
+        NoteField(f"note_estimate_{name}", f"AVC{label}", "radio", VALUES),
+        NoteField(f"note_comment_{name}", f"COMMENTAIRE{label}", "text"),
     )
 
 
@@ -53,8 +53,8 @@ def merge():
         groups=(
             FieldGroup(
                 fields=(
-                    *pair("fanny", "_FANNY", editable=False),
-                    *pair("roberto", "_ROBERTO", editable=False),
+                    *pair("fanny", "_FANNY"),
+                    *pair("roberto", "_ROBERTO"),
                 ),
                 persisted=False,
             ),
@@ -166,12 +166,6 @@ def test_the_row_counter_and_the_document_id_are_distinct_columns(merge):
     """The table and the export key on the counter, the alignment guard on the id."""
     assert merge.index_field in merge.export_fields
     assert merge.id_field not in merge.export_fields
-
-
-def test_a_non_persisted_group_can_be_declared_read_only(merge):
-    reference = [f for f in merge.rendered if f.name.endswith(("fanny", "roberto"))]
-
-    assert not any(f.editable for f in reference)
 
 
 ### CONSTRUCTION ---------------------------------------------------------------
@@ -295,29 +289,6 @@ def test_an_empty_group_is_rejected():
     """The pairing holds vacuously on no field, both slices being empty."""
     with pytest.raises(ValueError, match="none"):
         FieldGroup(fields=())
-
-
-@pytest.mark.parametrize(
-    ("persisted", "editable"),
-    [(False, True), (True, False)],
-    ids=["editable-and-never-written", "written-and-read-only"],
-)
-def test_a_group_editable_against_what_it_writes_is_rejected(persisted, editable):
-    """A field an annotator can answer is a field whose answer is written.
-
-    The two are one declaration and were two, so a group could offer a live widget it
-    never saves: the annotator answers, the page shows the answer, and moving to the
-    next document and back shows the previous one, with nothing written, nothing
-    rendered and nothing logged. That is the defect this module's descent closed by
-    hand on each field of the reference group, and the default reopened it for the next
-    consumer to declare one.
-
-    The other way round writes back what it read, which no browser can make wrong, and
-    it is refused with it: a field declared read-only inside a group that writes states
-    an intention the save does not honour.
-    """
-    with pytest.raises(ValueError, match="editable"):
-        FieldGroup(fields=pair("a", "", editable=editable), persisted=persisted)
 
 
 @pytest.mark.parametrize(
